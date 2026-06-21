@@ -50,6 +50,8 @@ struct CycleMetrics {
     position_ratio: f64,
     buy_sz: f64,
     sell_sz: f64,
+    size_multiplier: f64,
+    gate_mode: String,
     placed_buy: bool,
     placed_sell: bool,
     shed_filled: f64,
@@ -283,14 +285,20 @@ pub async fn run<A: MarketAdapter>(
             }
 
             // ── V11.5 动态阶梯闸门 (Dynamic Multi-Stage Gate) ──
-            // PUMP tick = 0.000001; TODO: per-coin tick from asset meta
+            let coin_tick = cfg.tick_for(coin);
             let gross_ticks = match (book.best_bid(), book.best_ask()) {
-                (Some(bid), Some(ask)) if ask > bid => (ask - bid) / 0.000001,
+                (Some(bid), Some(ask)) if ask > bid => (ask - bid) / coin_tick.max(1e-9),
                 _ => 999.0,
             };
-            let gi = gross_ticks as u32;
+            let gi = gross_ticks.round() as u32;  // round to fix fp precision (0.99999998→1)
 
-            let (gate_mode_str, size_multiplier) = if gi >= 4 {
+            let (gate_mode_str, size_multiplier) = if gi >= cfg.tsunami_ticks {
+                tracing::debug!(
+                    coin = %coin,
+                    gross_ticks = %format!("{:.1}", gross_ticks),
+                    tsunami_min = cfg.tsunami_ticks,
+                    "TSUNAMI_HARVEST 1.0x"
+                );
                 ("TSUNAMI", 1.0)
             } else if gi >= cfg.gate_block_ticks {
                 ("SNIPER", 0.4)
@@ -678,7 +686,13 @@ pub async fn run<A: MarketAdapter>(
 
                 // Place BUY order
                 if !freeze_buy && buy_sz > 0.0 {
-                    metrics.buy_sz = buy_sz;
+                    let cs = coin_state.get_or_init(coin);
+                metrics.size_multiplier = cs.size_multiplier;
+                metrics.gate_mode = cs.gate_mode.clone();
+                let cs_sz = coin_state.get_or_init(coin);
+                metrics.size_multiplier = cs_sz.size_multiplier;
+                metrics.gate_mode = cs_sz.gate_mode.clone();
+                metrics.buy_sz = buy_sz;
                     if is_unwind {
                         // Unwind BUY: GTC non-Post-Only at best_ask to cross spread.
                         // place_limit_order uses Alo (rejected when crossing) → use GTC instead.
@@ -1131,6 +1145,8 @@ fn log_cycle_metrics(m: &CycleMetrics) {
             pos_ratio = m.position_ratio,
             buy_sz = m.buy_sz,
             sell_sz = m.sell_sz,
+            size_mult = m.size_multiplier,
+            gate = %m.gate_mode,
             placed_buy = m.placed_buy,
             placed_sell = m.placed_sell,
             shed_filled = m.shed_filled,
@@ -1151,6 +1167,8 @@ fn log_cycle_metrics(m: &CycleMetrics) {
             pos_ratio = m.position_ratio,
             buy_sz = m.buy_sz,
             sell_sz = m.sell_sz,
+            size_mult = m.size_multiplier,
+            gate = %m.gate_mode,
             placed_buy = m.placed_buy,
             placed_sell = m.placed_sell,
             shed_filled = m.shed_filled,

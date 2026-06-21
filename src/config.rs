@@ -65,6 +65,8 @@ pub struct Config {
     pub freeze_cycles: u32,
     /// Minimum gross spread in ticks before gate blocks (below = GATE_BLOCKED; mid = MICRO_SNIPER 0.4x)
     pub gate_block_ticks: u32,
+    /// Minimum gross ticks to enter TSUNAMI_HARVEST (1.0x size). Default 4; set to 1 for structural-GOLD coins.
+    pub tsunami_ticks: u32,
     /// Min safety margin bps above roundtrip cost (net_spread must exceed roundtrip + margin)
     pub min_margin_bps: f64,
     /// Consecutive cycles with favorable conditions before entering Active from Waiting
@@ -131,7 +133,8 @@ impl Default for Config {
             unwind_hysteresis: 0.20,
             unwind_max_retreat_ticks: 3,
             freeze_cycles: 50,
-            gate_block_ticks: 0,
+            gate_block_ticks: 0,  // HMSTR: 1-tick always profitable
+            tsunami_ticks: 1,   // HMSTR: 1-tick = 60.8 bps → full send
             min_margin_bps: 2.0,
             spread_stable_cycles: 3,
             force_resync_interval: 20,
