@@ -1,0 +1,34 @@
+# Secrets — NEVER commit
+.env
+*.pem
+*.key
+*-key.json
+credentials*
+
+# Build artifacts
+/target/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+archive/logs/
+
+# Data (may contain PII)
+data/*.csv
+data/*.json
+
+# Docker
+.dockerignore
