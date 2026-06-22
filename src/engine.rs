@@ -683,15 +683,27 @@ pub async fn run<A: MarketAdapter>(
             coin_state.tick_freeze(coin);
 
             // ── 5. P0: Place orders BEFORE cancel (eliminates 150ms bare window) ──
-            let can_place = coin_state.can_place_orders(coin)
-                && (!portfolio_over_limit || coin_state.is_unwind(coin));
+            // V12.4: Portfolio-over-limit no longer blocks position-reducing orders.
+            // This aligns with the bootstrap design intent: "natural skew + quadratic
+            // qty" progressive rebalancing IS a reducing action — blocking it creates
+            // a deadlock where no coin enters UNWIND individually but aggregate is over limit.
+            let can_place = coin_state.can_place_orders(coin);
+            let portfolio_reduce = portfolio_over_limit && pos.size.abs() > 0.001;
+            if portfolio_reduce {
+                tracing::warn!(
+                    coin = %coin,
+                    pos_size = pos.size,
+                    pos_ratio_pct = %format!("{:.1}", risk_out.position_ratio * 100.0),
+                    "PORTFOLIO OVER LIMIT: reducing-only mode — block same-side, allow opposite-side"
+                );
+            }
             // UNWIND: skip profitability check (survival > profit)
             let is_unwind = coin_state.is_unwind(coin);
             // Gate: size_multiplier=0.0 → no orders placed (already handled)
             let roundtrip = cfg.roundtrip_bps();
             let min_spread = roundtrip + cfg.min_margin_bps;
             let spread_ok = risk_out.net_spread_bps > min_spread;
-            if (can_place && spread_ok) || is_unwind {
+            if (can_place && spread_ok) || is_unwind || portfolio_reduce {
                 // V9 Directional Freeze: ban opposite-side opens (Path B)
                 let freeze_dir = coin_state.freeze_direction_for(coin);
                 let is_frozen = coin_state.is_frozen(coin);
@@ -789,9 +801,11 @@ pub async fn run<A: MarketAdapter>(
 
                 let cooldown_left = coin_state.unwind_cooldown_left(coin);
                 let freeze_buy = (is_unwind && pos.size > 0.0)
-                    || (cooldown_left > 0 && pos.size > 0.0);
+                    || (cooldown_left > 0 && pos.size > 0.0)
+                    || (portfolio_over_limit && pos.size > 0.001);
                 let freeze_sell = (is_unwind && pos.size < 0.0)
-                    || (cooldown_left > 0 && pos.size < 0.0);
+                    || (cooldown_left > 0 && pos.size < 0.0)
+                    || (portfolio_over_limit && pos.size < -0.001);
                 if cooldown_left > 0 {
                     tracing::debug!(coin=%coin, cooldown_left, "post-UNWIND cooldown active");
                 }
