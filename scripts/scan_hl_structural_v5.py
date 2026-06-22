@@ -217,8 +217,8 @@ def stage3_depth_gate(velocity_survivors):
                 if len(levels) < 2 or not levels[0] or not levels[1]:
                     continue
 
-                asks = levels[0]
-                bids = levels[1]
+                bids = levels[0]  # HL API: [[bids], [asks]]
+                asks = levels[1]
                 bb = float(bids[0]["px"])
                 ba = float(asks[0]["px"])
                 mid = (bb + ba) / 2
