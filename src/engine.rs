@@ -284,15 +284,25 @@ pub async fn run<A: MarketAdapter>(
                 last_known_position.insert(coin.clone(), chain_size);
             }
 
-            // ── V11.5 动态阶梯闸门 (Dynamic Multi-Stage Gate) ──
+            // ── V12 动态阶梯闸门 + Crossed-Book 检测 ──
             let coin_tick = cfg.tick_for(coin);
-            let gross_ticks = match (book.best_bid(), book.best_ask()) {
-                (Some(bid), Some(ask)) if ask > bid => (ask - bid) / coin_tick.max(1e-9),
-                _ => 999.0,
+            // V12: Detect crossed book (best_ask <= best_bid). REST-verified, NOT local desync.
+            // In a CLOB, crossed books mean ghost liquidity — real trades happen at the crossing
+            // point, which Post-Only orders can never reach. Force GATE_BLOCKED.
+            let (gross_ticks, book_crossed) = match (book.best_bid(), book.best_ask()) {
+                (Some(bid), Some(ask)) if ask > bid => ((ask - bid) / coin_tick.max(1e-9), false),
+                (Some(_bid), Some(_ask)) => (0.0, true),
+                _ => (999.0, false),
             };
-            let gi = gross_ticks.round() as u32;  // round to fix fp precision (0.99999998→1)
+            let gi = gross_ticks.round() as u32;
 
-            let (gate_mode_str, size_multiplier) = if gi >= cfg.tsunami_ticks {
+            let (gate_mode_str, size_multiplier) = if book_crossed {
+                tracing::warn!(
+                    coin = %coin,
+                    "CROSSED_BOOK: best_ask <= best_bid (REST-verified), forcing GATE_BLOCKED"
+                );
+                ("CROSSED", 0.0)
+            } else if gi >= cfg.tsunami_ticks {
                 tracing::debug!(
                     coin = %coin,
                     gross_ticks = %format!("{:.1}", gross_ticks),
@@ -733,10 +743,14 @@ pub async fn run<A: MarketAdapter>(
                         }
                         }  // close if unwind_buy_sz > 0.0
                     } else {
-                        let shading_offset = calculate_bid_tick_offset(
+                        let mut shading_offset = calculate_bid_tick_offset(
                             coin_state.ask_rejection_count(coin),
                             risk_out.skew_bps,
                         );
+                        // V12: Coarse tick hard cap — 1-tick gross ≥30bps already fattens enough
+                        if risk_out.gross_spread_bps >= 30.0 {
+                            shading_offset = shading_offset.min(1);
+                        }
                         let shaded_bid = apply_bid_shading(defensive_bid_px, shading_offset, coin_tick);
                         if shading_offset > 0 || toxic_active {
                             tracing::info!(
@@ -817,7 +831,11 @@ pub async fn run<A: MarketAdapter>(
                     } else {
                         // ASK shading: retreat SELL upward when rejected
                         let ask_reject = coin_state.ask_rejection_count(coin);
-                        let ask_offset = calculate_ask_tick_offset(ask_reject, risk_out.skew_bps);
+                        let mut ask_offset = calculate_ask_tick_offset(ask_reject, risk_out.skew_bps);
+                        // V12: Coarse tick hard cap
+                        if risk_out.gross_spread_bps >= 30.0 {
+                            ask_offset = ask_offset.min(1);
+                        }
                         let shaded_ask = apply_ask_shading(defensive_ask_px, ask_offset, coin_tick);
                         if ask_offset > 0 {
                             tracing::info!(
@@ -846,8 +864,13 @@ pub async fn run<A: MarketAdapter>(
                                 if reason.to_lowercase().contains("would match") =>
                             {
                                 let count = coin_state.increment_ask_rejections(coin);
-                                let bid_offset = calculate_bid_tick_offset(count, risk_out.skew_bps);
-                                let ask_offset2 = calculate_ask_tick_offset(count, risk_out.skew_bps);
+                                let mut bid_offset = calculate_bid_tick_offset(count, risk_out.skew_bps);
+                                let mut ask_offset2 = calculate_ask_tick_offset(count, risk_out.skew_bps);
+                                // V12: Coarse tick hard cap on rejection-retry shading too
+                                if risk_out.gross_spread_bps >= 30.0 {
+                                    bid_offset = bid_offset.min(1);
+                                    ask_offset2 = ask_offset2.min(1);
+                                }
                                 tracing::warn!(
                                     coin = %coin,
                                     count,
