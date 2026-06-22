@@ -123,6 +123,10 @@ pub struct PerCoinState {
     /// SELL "would match" rejections in NORMAL state. Drives dynamic
     /// BUY price retreat to prevent one-sided LONG accumulation.
     pub ask_rejections: u32,
+    /// V12.1: Running tally of BUY fills since last side reset (sensitive skew in COARSE mode)
+    pub buy_fills_tally: u32,
+    /// V12.1: Running tally of SELL fills since last side reset
+    pub sell_fills_tally: u32,
     pub unwind_cooldown: u32,
     /// Flip hysteresis: sequence # of the cycle that last changed direction sign.
     /// Prevents flip-flopping — locks opposite direction for FLIP_LOCK_CYCLES after a flip.
@@ -154,6 +158,8 @@ impl PerCoinState {
             zero_shed_rounds: 0,
             ask_rejections: 0,
             unwind_cooldown: 0,
+            buy_fills_tally: 0,
+            sell_fills_tally: 0,
             last_flip_cycle: 0,
             freeze_remaining: 0,
             freeze_direction: 0,
@@ -174,6 +180,8 @@ impl PerCoinState {
             zero_shed_rounds: 0,
             ask_rejections: 0,
             unwind_cooldown: 0,
+            buy_fills_tally: 0,
+            sell_fills_tally: 0,
             last_flip_cycle: 0,
             freeze_remaining: 0,
             freeze_direction: 0,
@@ -228,11 +236,14 @@ impl CoinStateMachine {
     }
 
     /// Transition a coin to a new state. Logs only on actual change.
-    /// Also resets ask_rejections counter — a state change means the
-    /// market context has shifted, so shading should start fresh.
+    /// Also resets ask_rejections counter + V12.1 fill tallies — a state change means the
+    /// market context has shifted, so shading + skew tracking should start fresh.
     pub fn transition(&mut self, coin: &str, next: State) {
         let cs = self.get_or_init(coin);
         if cs.state != next {
+            cs.ask_rejections = 0; // fresh start in new state
+            cs.buy_fills_tally = 0;  // V12.1: reset fill tallies
+            cs.sell_fills_tally = 0;
             tracing::info!(
                 coin = %coin,
                 from = %cs.state,
@@ -375,6 +386,39 @@ impl CoinStateMachine {
     /// Get the current ask-rejection count for a coin.
     pub fn ask_rejection_count(&mut self, coin: &str) -> u32 {
         self.get_or_init(coin).ask_rejections
+    }
+
+    // ── V12.1 Sensitive Skew Control (COARSE mode 1-tick fill tally) ──
+
+    /// Increment buy-side fill tally. Returns new count.
+    pub fn tally_buy_fill(&mut self, coin: &str) -> u32 {
+        let cs = self.get_or_init(coin);
+        cs.buy_fills_tally += 1;
+        cs.buy_fills_tally
+    }
+
+    /// Increment sell-side fill tally. Returns new count.
+    pub fn tally_sell_fill(&mut self, coin: &str) -> u32 {
+        let cs = self.get_or_init(coin);
+        cs.sell_fills_tally += 1;
+        cs.sell_fills_tally
+    }
+
+    /// Reset all fill tallies (e.g. on state transition or side rebalancing).
+    pub fn reset_fill_tallies(&mut self, coin: &str) {
+        let cs = self.get_or_init(coin);
+        cs.buy_fills_tally = 0;
+        cs.sell_fills_tally = 0;
+    }
+
+    /// Check if buy side should be stopped (COARSE mode sensitive skew).
+    pub fn buy_side_tapped_out(&self, coin: &str, max_fills: u32) -> bool {
+        self.coins.get(coin).map_or(false, |cs| cs.buy_fills_tally >= max_fills)
+    }
+
+    /// Check if sell side should be stopped (COARSE mode sensitive skew).
+    pub fn sell_side_tapped_out(&self, coin: &str, max_fills: u32) -> bool {
+        self.coins.get(coin).map_or(false, |cs| cs.sell_fills_tally >= max_fills)
     }
 
     // ── V8 Flip Hysteresis: prevent directional whiplash ──

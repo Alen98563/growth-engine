@@ -296,12 +296,26 @@ pub async fn run<A: MarketAdapter>(
             };
             let gi = gross_ticks.round() as u32;
 
+            // ── V12.1: coarse tick bps for dual-axis gate ──
+            let gross_bps = risk_out.gross_spread_bps;
+
             let (gate_mode_str, size_multiplier) = if book_crossed {
                 tracing::warn!(
                     coin = %coin,
                     "CROSSED_BOOK: best_ask <= best_bid (REST-verified), forcing GATE_BLOCKED"
                 );
                 ("CROSSED", 0.0)
+            } else if gross_bps >= cfg.coarse_tick_bps_threshold && gi == 1 {
+                // V12.1: Coarse-tick harvest — 1 tick ≥ 15 bps (e.g. HMSTR 53 bps)
+                // Zero shading, 20% size, sensitive skew control.
+                tracing::info!(
+                    coin = %coin,
+                    gross_ticks = %format!("{:.1}", gross_ticks),
+                    gross_bps = %format!("{:.1}", gross_bps),
+                    size_pct = cfg.coarse_tick_size_pct,
+                    "COARSE_TICK_HARVEST {:.1}x — 1-tick fat margin", cfg.coarse_tick_size_pct
+                );
+                ("COARSE", cfg.coarse_tick_size_pct)
             } else if gi >= cfg.tsunami_ticks {
                 tracing::debug!(
                     coin = %coin,
@@ -317,8 +331,16 @@ pub async fn run<A: MarketAdapter>(
             };
 
             // Persist multiplier for order sizing
+            let old_gate = coin_state.get_or_init(coin).gate_mode.clone();
             coin_state.get_or_init(coin).size_multiplier = size_multiplier;
             coin_state.get_or_init(coin).gate_mode = gate_mode_str.to_string();
+
+            // V12.1: Reset fill tallies on gate mode change (new market regime)
+            if old_gate != gate_mode_str {
+                coin_state.reset_fill_tallies(coin);
+                tracing::debug!(coin=%coin, old=%old_gate, new=gate_mode_str,
+                    "gate mode changed → fill tallies reset");
+            }
 
             if size_multiplier == 0.0 {
                 if !coin_state.is_gate_blocked(coin) {
@@ -680,6 +702,30 @@ pub async fn run<A: MarketAdapter>(
                     );
                 }
 
+                // V12.1: COARSE mode sensitive skew — block side after N same-side fills
+                {
+                    let cs = coin_state.get_or_init(coin);
+                    let gate = cs.gate_mode.clone();
+                    let buys = cs.buy_fills_tally;
+                    let sells = cs.sell_fills_tally;
+                    if gate == "COARSE" {
+                        let max_side = cfg.coarse_tick_max_side_fills;
+                        if buys >= max_side {
+                            buy_sz = 0.0;
+                            tracing::warn!(coin=%coin, buys, max_side,
+                                "COARSE sensitive skew: BUY blocked after {buys} fills");
+                        }
+                        if sells >= max_side {
+                            sell_sz = 0.0;
+                            tracing::warn!(coin=%coin, sells, max_side,
+                                "COARSE sensitive skew: SELL blocked after {sells} fills");
+                        }
+                        if buys == 0 && sells == 0 {
+                            tracing::debug!(coin=%coin, "COARSE: both sides clear");
+                        }
+                    }
+                }
+
                 let coin_tick = cfg.tick_for(coin);
 
                 let cooldown_left = coin_state.unwind_cooldown_left(coin);
@@ -743,12 +789,16 @@ pub async fn run<A: MarketAdapter>(
                         }
                         }  // close if unwind_buy_sz > 0.0
                     } else {
+                        let gate_mode = coin_state.get_or_init(coin).gate_mode.clone();
                         let mut shading_offset = calculate_bid_tick_offset(
                             coin_state.ask_rejection_count(coin),
                             risk_out.skew_bps,
                         );
+                        // V12.1: COARSE mode — zero shading (can't retreat 1 tick in 1-tick spread)
+                        if gate_mode == "COARSE" {
+                            shading_offset = 0;
                         // V12: Coarse tick hard cap — 1-tick gross ≥30bps already fattens enough
-                        if risk_out.gross_spread_bps >= 30.0 {
+                        } else if risk_out.gross_spread_bps >= 30.0 {
                             shading_offset = shading_offset.min(1);
                         }
                         let shaded_bid = apply_bid_shading(defensive_bid_px, shading_offset, coin_tick);
@@ -832,8 +882,12 @@ pub async fn run<A: MarketAdapter>(
                         // ASK shading: retreat SELL upward when rejected
                         let ask_reject = coin_state.ask_rejection_count(coin);
                         let mut ask_offset = calculate_ask_tick_offset(ask_reject, risk_out.skew_bps);
+                        // V12.1: COARSE mode — zero shading
+                        let gate_mode_se = coin_state.get_or_init(coin).gate_mode.clone();
+                        if gate_mode_se == "COARSE" {
+                            ask_offset = 0;
                         // V12: Coarse tick hard cap
-                        if risk_out.gross_spread_bps >= 30.0 {
+                        } else if risk_out.gross_spread_bps >= 30.0 {
                             ask_offset = ask_offset.min(1);
                         }
                         let shaded_ask = apply_ask_shading(defensive_ask_px, ask_offset, coin_tick);
@@ -866,8 +920,13 @@ pub async fn run<A: MarketAdapter>(
                                 let count = coin_state.increment_ask_rejections(coin);
                                 let mut bid_offset = calculate_bid_tick_offset(count, risk_out.skew_bps);
                                 let mut ask_offset2 = calculate_ask_tick_offset(count, risk_out.skew_bps);
+                                // V12.1: COARSE mode — zero shading
+                                let gate_mode_rr = coin_state.get_or_init(coin).gate_mode.clone();
+                                if gate_mode_rr == "COARSE" {
+                                    bid_offset = 0;
+                                    ask_offset2 = 0;
                                 // V12: Coarse tick hard cap on rejection-retry shading too
-                                if risk_out.gross_spread_bps >= 30.0 {
+                                } else if risk_out.gross_spread_bps >= 30.0 {
                                     bid_offset = bid_offset.min(1);
                                     ask_offset2 = ask_offset2.min(1);
                                 }
@@ -986,12 +1045,20 @@ pub async fn run<A: MarketAdapter>(
             // Drain and log fills
             let fills = bus.drain_fills();
             for fill in &fills {
+                // V12.1: Tally fills per side for COARSE mode sensitive skew
+                let fill_side = fill.side.to_lowercase();
+                let tally = if fill_side.starts_with('b') {
+                    coin_state.tally_buy_fill(&fill.coin)
+                } else {
+                    coin_state.tally_sell_fill(&fill.coin)
+                };
                 tracing::info!(
                     coin = %fill.coin,
                     side = %fill.side,
                     sz = fill.sz,
                     px = fill.px,
                     fee = fill.fee,
+                    side_tally = tally,
                     "fill processed"
                 );
             }
