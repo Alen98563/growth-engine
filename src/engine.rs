@@ -1,4 +1,5 @@
 //! Core Engine — per-coin state machine + risk loop + label recording.
+//! Version: V12.4 (portfolio-reduce) | 17 defense layers
 //!
 //! The engine runs a continuous loop:
 //!
@@ -6,17 +7,41 @@
 //! cycle:
 //!   1. Fetch state (account + L2 books)
 //!   2. Read WS shock signal (P0: toxic burst detection)
-//!   3. Place new orders FIRST (P0: place-before-cancel eliminates 150ms gap)
-//!   4. Cancel stale orders SECOND (P0: old orders still protect during place)
-//!   5. Risk assess (cubic skew + asymmetric qty + shed/unwind check)
-//!   6. Per-coin state transition logic
-//!      NORMAL(0-40%) → PASSIVE_UNWIND(40-90%) → EMERGENCY_IOC(90%+) → COOLDOWN
-//!      With 20% hysteresis: exit UNWIND at watermark − hysteresis
-//!   7. Log metrics  (per-coin state shown)
-//!   8. Record label (CycleRecord → CSV for ML pipeline)
-//!   9. Sleep (3-5s + jitter to avoid 429)
+//!   3. Gate evaluation (CROSSED→THIN_SPREAD→COARSE→TSUNAMI→SNIPER→BLOCKED)
+//!   4. Place new orders FIRST (P0: place-before-cancel eliminates 150ms gap)
+//!   5. Cancel stale orders SECOND (P0: old orders still protect during place)
+//!   6. Check fills (order status API → position tracking)
+//!   7. Risk assess (cubic skew + asymmetric qty + shed/unwind check)
+//!   8. Portfolio limit check + portfolio-reduce bypass (V12.4)
+//!   9. Per-coin state transition (NORMAL→PASSIVE_UNWIND→EMERGENCY_IOC→COOLDOWN→WAITING)
+//!      With 20% hysteresis: enter UNWIND at <watermark>, exit at <watermark − hysteresis>
+//!  10. Log metrics (per-coin state shown)
+//!  11. Record label (CycleRecord → CSV)
+//!  12. Sleep (3-5s + jitter to avoid 429)
 //!
 //! Graceful shutdown: SIGTERM/SIGINT → cancel all open orders → exit.
+//!
+//! ## Key Architecture Decisions (V12.4)
+//!
+//! - **Place-before-cancel**: Orders placed first, then stale ones cancelled.
+//!   Eliminates the 150ms bare window where the book has no orders.
+//! - **Portfolio-reduce bypass**: When aggregate notional exceeds the hard limit
+//!   (60% equity default), position-reducing orders are still allowed. LONG positions
+//!   can only SELL; SHORT positions can only BUY. Flat coins are blocked.
+//!   This fixes the restart deadlock where no coin individually exceeds the 40%
+//!   unwind threshold but the aggregate portfolio is over limit.
+//! - **Gate runs BEFORE state transitions**: Spread conditions evaluated per-cycle;
+//!   state transitions follow. A BLOCKED coin can still transition to UNWIND
+//!   (unwind bypasses the gate for survival).
+//! - **THIN_SPREAD gate (V12.3)**: Coins where gross_bps < maker_fee + min_margin
+//!   are blocked automatically. Prevents fine-tick coins (RESOLV 0.46 bps) from
+//!   trading at negative net spread.
+//! - **COARSE dual-axis gate (V12.1)**: 1-tick coins with bps >= 15 enter reduced
+//!   (30%) COARSE harvest mode with zero shading and asymmetric sizing.
+//! - **Crossed-book gate (V12)**: When REST L2 returns best_ask ≤ best_bid,
+//!   the market is untradeable for Post-Only makers → BLOCKED.
+//! - **Shading cap (V12)**: Coarse-tick coins (gross_bps ≥ 30) have shading offset
+//!   capped at 1 tick to prevent suicidal over-isolation.
 //! ```
 
 use crate::config::Config;
