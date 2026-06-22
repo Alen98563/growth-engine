@@ -305,6 +305,22 @@ pub async fn run<A: MarketAdapter>(
                     "CROSSED_BOOK: best_ask <= best_bid (REST-verified), forcing GATE_BLOCKED"
                 );
                 ("CROSSED", 0.0)
+            } else if gross_bps < cfg.maker_fee_bps + cfg.min_margin_bps {
+                // V12.3: Net-spread safety gate — block if gross can't cover
+                // maker fee + safety margin even at 100% maker fill rate.
+                // Prevents fine-tick coins (e.g. RESOLV 0.46 bps 1-tick) from
+                // trading at negative net spread.
+                tracing::warn!(
+                    coin = %coin,
+                    gross_bps = %format!("{:.1}", gross_bps),
+                    maker_fee = cfg.maker_fee_bps,
+                    min_margin = cfg.min_margin_bps,
+                    needed = cfg.maker_fee_bps + cfg.min_margin_bps,
+                    "SPREAD_TOO_THIN: gross {:.1} < maker_fee {} + margin {} = {:.1} — blocking",
+                    gross_bps, cfg.maker_fee_bps, cfg.min_margin_bps,
+                    cfg.maker_fee_bps + cfg.min_margin_bps
+                );
+                ("THIN_SPREAD", 0.0)
             } else if gross_bps >= cfg.coarse_tick_bps_threshold && gi == 1 {
                 // V12.1: Coarse-tick harvest — 1 tick ≥ 15 bps (e.g. HMSTR 53 bps)
                 // Zero shading, 20% size, sensitive skew control.
