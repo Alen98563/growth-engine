@@ -678,7 +678,7 @@ pub async fn run<A: MarketAdapter>(
             if (can_place && spread_ok) || is_unwind {
                 // V9 Directional Freeze: ban opposite-side opens (Path B)
                 let freeze_dir = coin_state.freeze_direction_for(coin);
-                let is_frozen = freeze_dir != 0;
+                let is_frozen = coin_state.is_frozen(coin);
                 let mut buy_sz = {
                 let cs = coin_state.get_or_init(coin);
                 risk_out.buy_sz * cs.size_multiplier

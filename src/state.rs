@@ -444,6 +444,9 @@ impl CoinStateMachine {
         let cs = self.get_or_init(coin);
         if cs.freeze_remaining > 0 {
             cs.freeze_remaining -= 1;
+            if cs.freeze_remaining == 0 {
+                cs.freeze_direction = 0;
+            }
         }
     }
 
