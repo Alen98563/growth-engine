@@ -66,7 +66,13 @@ pub struct Config {
     /// Minimum gross spread in ticks before gate blocks (below = GATE_BLOCKED; mid = MICRO_SNIPER 0.4x)
     pub gate_block_ticks: u32,
     /// Minimum gross ticks to enter TSUNAMI_HARVEST (1.0x size). Default 4; set to 1 for structural-GOLD coins.
+    /// V12.1: Minimum gross bps to enter COARSE_TICK_HARVEST (1-tick fat-margin coins)
+    pub coarse_tick_bps_threshold: f64,
+    /// V12.1: Size reduction for COARSE_TICK_HARVEST mode (0.20 = 20% of normal)
+    pub coarse_tick_size_pct: f64,
     pub tsunami_ticks: u32,
+    /// V12.1: Max same-side fills in COARSE mode before stopping that side (sensitive skew control)
+    pub coarse_tick_max_side_fills: u32,
     /// Min safety margin bps above roundtrip cost (net_spread must exceed roundtrip + margin)
     pub min_margin_bps: f64,
     /// Consecutive cycles with favorable conditions before entering Active from Waiting
@@ -135,6 +141,9 @@ impl Default for Config {
             freeze_cycles: 50,
             gate_block_ticks: 0,  // HMSTR: 1-tick always profitable
             tsunami_ticks: 1,   // HMSTR: 1-tick = 60.8 bps → full send
+            coarse_tick_bps_threshold: 15.0,  // V12.1: 1 tick ≥ 15 bps → COARSE mode
+            coarse_tick_size_pct: 0.20,       // V12.1: 20% size in COARSE mode
+            coarse_tick_max_side_fills: 3,   // V12.1: stop same side after 3 fills in COARSE mode
             min_margin_bps: 2.0,
             spread_stable_cycles: 3,
             force_resync_interval: 20,
