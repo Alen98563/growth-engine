@@ -127,6 +127,10 @@ pub struct PerCoinState {
     pub buy_fills_tally: u32,
     /// V12.1: Running tally of SELL fills since last side reset
     pub sell_fills_tally: u32,
+    /// V12.2: Consecutive same-side fills counter (toxicity momentum detection)
+    pub consecutive_same_side_fills: u32,
+    /// V12.2: Last fill side for momentum tracking ("buy" or "sell")
+    pub last_fill_side: Option<String>,
     pub unwind_cooldown: u32,
     /// Flip hysteresis: sequence # of the cycle that last changed direction sign.
     /// Prevents flip-flopping — locks opposite direction for FLIP_LOCK_CYCLES after a flip.
@@ -160,6 +164,8 @@ impl PerCoinState {
             unwind_cooldown: 0,
             buy_fills_tally: 0,
             sell_fills_tally: 0,
+            consecutive_same_side_fills: 0,
+            last_fill_side: None,
             last_flip_cycle: 0,
             freeze_remaining: 0,
             freeze_direction: 0,
@@ -182,6 +188,8 @@ impl PerCoinState {
             unwind_cooldown: 0,
             buy_fills_tally: 0,
             sell_fills_tally: 0,
+            consecutive_same_side_fills: 0,
+            last_fill_side: None,
             last_flip_cycle: 0,
             freeze_remaining: 0,
             freeze_direction: 0,
@@ -447,5 +455,43 @@ impl CoinStateMachine {
     /// Returns the freeze direction: -1=SHORT_freeze, 1=LONG_freeze, 0=none.
     pub fn freeze_direction_for(&self, coin: &str) -> i8 {
         self.coins.get(coin).map(|c| c.freeze_direction).unwrap_or(0)
+    }
+
+    // ── V12.2: Fill toxicity momentum tracking ──
+
+    /// Record a fill side for toxicity momentum detection.
+    /// Resets the consecutive counter if side switches.
+    /// Returns the new consecutive count for this side.
+    pub fn record_fill_side(&mut self, coin: &str, is_buy: bool) -> u32 {
+        let cs = self.get_or_init(coin);
+        let this_side = if is_buy { "buy" } else { "sell" };
+        match &cs.last_fill_side {
+            Some(last) if last == this_side => {
+                cs.consecutive_same_side_fills += 1;
+            }
+            _ => {
+                cs.consecutive_same_side_fills = 1;
+            }
+        }
+        cs.last_fill_side = Some(this_side.to_string());
+        cs.consecutive_same_side_fills
+    }
+
+    /// Check if a side is blocked by toxicity momentum (>=3 consecutive same-side fills).
+    /// Returns Some("buy") or Some("sell") if blocked, None if neither.
+    pub fn toxicity_blocked_side(&self, coin: &str, threshold: u32) -> Option<String> {
+        let cs = self.coins.get(coin)?;
+        if cs.consecutive_same_side_fills >= threshold {
+            cs.last_fill_side.clone()
+        } else {
+            None
+        }
+    }
+
+    /// Reset toxicity tracking (on state transition, gate mode change, or manual reset).
+    pub fn reset_toxicity(&mut self, coin: &str) {
+        let cs = self.get_or_init(coin);
+        cs.consecutive_same_side_fills = 0;
+        cs.last_fill_side = None;
     }
 }

@@ -49,7 +49,6 @@ pub struct Config {
     /// Per-coin tick size overrides (e.g. FARTCOIN → 0.00001)
     pub tick_sizes: HashMap<String, f64>,
     /// Number of ticks to widen beyond market spread (0 = market spread).
-    /// Path C: for hyper-competitive 1-tick markets like PUMP, set 3-4.
     pub base_spread_ticks: u32,
     /// Minimum order size in native units (not notional)
     pub min_order_size: f64,
@@ -57,23 +56,20 @@ pub struct Config {
     pub min_reserve: f64,
     /// Passive unwind trigger (fraction of hard_limit, e.g. 0.40)
     pub passive_unwind_watermark: f64,
-    /// Hysteresis buffer: exit UNWIND at watermark − hysteresis (e.g. 0.40 − 0.20 = 0.20)
-    /// Prevents state flickering when position oscillates near the watermark.
+    /// Hysteresis buffer: exit UNWIND at watermark − hysteresis
     pub unwind_hysteresis: f64,
     /// Directional freeze cycles after a position flip (e.g. 50).
-    /// Freeze bans placing orders opposite to the new direction.
     pub freeze_cycles: u32,
-    /// Minimum gross spread in ticks before gate blocks (below = GATE_BLOCKED; mid = MICRO_SNIPER 0.4x)
+    /// Minimum gross spread in ticks before gate blocks
     pub gate_block_ticks: u32,
-    /// Minimum gross ticks to enter TSUNAMI_HARVEST (1.0x size). Default 4; set to 1 for structural-GOLD coins.
     /// V12.1: Minimum gross bps to enter COARSE_TICK_HARVEST (1-tick fat-margin coins)
     pub coarse_tick_bps_threshold: f64,
     /// V12.1: Size reduction for COARSE_TICK_HARVEST mode (0.20 = 20% of normal)
     pub coarse_tick_size_pct: f64,
     pub tsunami_ticks: u32,
-    /// V12.1: Max same-side fills in COARSE mode before stopping that side (sensitive skew control)
+    /// V12.1: Max same-side fills in COARSE mode before stopping that side
     pub coarse_tick_max_side_fills: u32,
-    /// Min safety margin bps above roundtrip cost (net_spread must exceed roundtrip + margin)
+    /// Min safety margin bps above roundtrip cost
     pub min_margin_bps: f64,
     /// Consecutive cycles with favorable conditions before entering Active from Waiting
     pub spread_stable_cycles: u32,
@@ -81,6 +77,14 @@ pub struct Config {
     pub force_resync_interval: u32,
     /// Max tick retreat attempts when Alo rejected with "would match"
     pub unwind_max_retreat_ticks: u32,
+
+    // ── V12.2: Coarse-tick asymmetric sizing ──
+    /// Position ratio threshold (abs) where asymmetric sizing begins. Default 0.05 (5%).
+    pub coarse_pos_ratio_aggressive: f64,
+    /// Position ratio threshold (abs) where adverse side is killed completely. Default 0.12 (12%).
+    pub coarse_pos_ratio_hard_kill: f64,
+    /// Size boost factor for the favorable (unwind) side when asymmetric sizing activates.
+    pub coarse_unwind_size_boost: f64,
 
     // ── Timing ──
     /// Engine loop cycle min sleep (seconds)
@@ -109,17 +113,12 @@ impl Default for Config {
             coins: vec!["HMSTR".into()],
             growth_mode: true,
 
-            // Cubic skew — preserves spread for first 75% of position
             skew_power: 2.5,
-            
             max_skew_bps: 150.0,
             skew_safe_zone: 0.20,
-
-            // Quadratic qty decay
             qty_power: 2.0,
             base_order_notional: 10.0,
 
-            // Risk limits
             hard_limit_ratio: 0.60,
             shed_trigger: 0.90,
             shed_fraction: 0.50,
@@ -139,22 +138,25 @@ impl Default for Config {
             unwind_hysteresis: 0.20,
             unwind_max_retreat_ticks: 3,
             freeze_cycles: 50,
-            gate_block_ticks: 0,  // HMSTR: 1-tick always profitable
-            tsunami_ticks: 1,   // HMSTR: 1-tick = 60.8 bps → full send
-            coarse_tick_bps_threshold: 15.0,  // V12.1: 1 tick ≥ 15 bps → COARSE mode
-            coarse_tick_size_pct: 0.20,       // V12.1: 20% size in COARSE mode
-            coarse_tick_max_side_fills: 3,   // V12.1: stop same side after 3 fills in COARSE mode
+            gate_block_ticks: 0,
+            tsunami_ticks: 1,
+            coarse_tick_bps_threshold: 15.0,
+            coarse_tick_size_pct: 0.20,
+            coarse_tick_max_side_fills: 3,
             min_margin_bps: 2.0,
             spread_stable_cycles: 3,
             force_resync_interval: 20,
 
-            // Timing (3-5s to avoid 429)
+            // V12.2: asymmetric sizing for coarse-tick markets
+            coarse_pos_ratio_aggressive: 0.05,
+            coarse_pos_ratio_hard_kill: 0.12,
+            coarse_unwind_size_boost: 1.2,
+
             cycle_sleep_min: 3.0,
             cycle_sleep_max: 5.0,
             cycle_jitter: 0.2,
             ws_reconnect_delay: Duration::from_secs(2),
 
-            // Growth Mode fees
             maker_fee_bps: 0.17,
             taker_fee_bps: 0.50,
         }
@@ -211,7 +213,6 @@ impl Config {
             }
         }
 
-        // Override fees if Growth Mode
         if cfg.growth_mode {
             cfg.maker_fee_bps = 0.17;
             cfg.taker_fee_bps = 0.50;
