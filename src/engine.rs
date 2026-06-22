@@ -723,6 +723,49 @@ pub async fn run<A: MarketAdapter>(
                         if buys == 0 && sells == 0 {
                             tracing::debug!(coin=%coin, "COARSE: both sides clear");
                         }
+                    // V12.2: Asymmetric sizing for coarse-tick markets
+                    // When position accumulates heavily on one side, shrink the adverse side and
+                    // boost the favorable (unwind) side. Prevents free-option writing.
+                    {
+                        let gate_v122 = coin_state.get_or_init(coin).gate_mode.clone();
+                        if gate_v122 == "COARSE" {
+                            let pr_abs = risk_out.position_ratio.abs();
+                            let favor_buy = pos.size < 0.0;
+                            let favor_sell = pos.size > 0.0;
+                            if pr_abs > cfg.coarse_pos_ratio_aggressive && pr_abs <= cfg.coarse_pos_ratio_hard_kill {
+                                let boost = cfg.coarse_unwind_size_boost;
+                                if favor_buy {
+                                    buy_sz *= boost;
+                                    sell_sz = sell_sz.min(buy_sz * 0.25);
+                                    tracing::info!(coin=%coin, pr_pct=%format!("{:.1}", pr_abs*100.0),
+                                        buy_sz=%format!("{:.4}", buy_sz), sell_sz=%format!("{:.4}", sell_sz),
+                                        "COARSE asymmetric: SHORT pos -> boost BUY {:.1}x, cap SELL", boost);
+                                } else if favor_sell {
+                                    sell_sz *= boost;
+                                    buy_sz = buy_sz.min(sell_sz * 0.25);
+                                    tracing::info!(coin=%coin, pr_pct=%format!("{:.1}", pr_abs*100.0),
+                                        buy_sz=%format!("{:.4}", buy_sz), sell_sz=%format!("{:.4}", sell_sz),
+                                        "COARSE asymmetric: LONG pos -> boost SELL {:.1}x, cap BUY", boost);
+                                }
+                            } else if pr_abs > cfg.coarse_pos_ratio_hard_kill {
+                                let boost = cfg.coarse_unwind_size_boost;
+                                if favor_buy {
+                                    buy_sz *= boost;
+                                    sell_sz = 0.0;
+                                    tracing::warn!(coin=%coin, pr_pct=%format!("{:.1}", pr_abs*100.0),
+                                        buy_sz=%format!("{:.4}", buy_sz),
+                                        "COARSE hard kill: SELL ZERO, BUY {:.1}x", boost);
+                                } else if favor_sell {
+                                    sell_sz *= boost;
+                                    buy_sz = 0.0;
+                                    tracing::warn!(coin=%coin, pr_pct=%format!("{:.1}", pr_abs*100.0),
+                                        sell_sz=%format!("{:.4}", sell_sz),
+                                        "COARSE hard kill: BUY ZERO, SELL {:.1}x", boost);
+                                }
+                            }
+                        }
+                    }
+
                     }
                 }
 
@@ -1052,6 +1095,17 @@ pub async fn run<A: MarketAdapter>(
                 } else {
                     coin_state.tally_sell_fill(&fill.coin)
                 };
+                // V12.2: Toxicity momentum — track consecutive same-side fills
+                let is_buy = fill_side.starts_with('b');
+                let consecutive = coin_state.record_fill_side(&fill.coin, is_buy);
+                if consecutive >= 3 {
+                    tracing::warn!(
+                        coin = %fill.coin,
+                        side = if is_buy { "BUY" } else { "SELL" },
+                        consecutive,
+                        "TOXICITY: {} consecutive same-side fills — momentum alert", consecutive
+                    );
+                }
                 tracing::info!(
                     coin = %fill.coin,
                     side = %fill.side,
