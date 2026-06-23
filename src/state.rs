@@ -72,6 +72,16 @@ use std::time::Instant;
 
 use crate::types_proto::StateMachine;
 
+/// V12.5: Trading mode — coarse-tick vs fine-tick routing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TradingMode {
+    #[default]
+    /// Coarse-tick mode: 1-tick shading=0, Gate ladder, GTC unwind
+    Coarse,
+    /// Fine-tick mode: multi-tick shading, passive unwind, OFI gate
+    FineTick,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum State {
     #[default]
@@ -174,6 +184,14 @@ pub struct PerCoinState {
     pub favorable_cycles: u32,
     /// Last reason for being in Waiting state
     pub waiting_reason: String,
+    /// V12.5: Trading mode for this coin (Coarse vs FineTick)
+    pub mode: TradingMode,
+    /// V12.5: OFI EMA smoothed value for momentum gate
+    pub ofi_smooth: f64,
+    /// V12.5: Passive unwind cycle counter — after timeout, escalate to GTC taker
+    pub passive_unwind_cycles: u32,
+    /// V12.6: WebSocket position tracking is stale (chain drift detected, REST resync needed)
+    pub ws_stale: bool,
 
         }
 
@@ -198,6 +216,10 @@ impl PerCoinState {
             freeze_direction: 0,
             favorable_cycles: 0,
             waiting_reason: String::new(),
+            mode: TradingMode::Coarse,
+            ofi_smooth: 0.0,
+            passive_unwind_cycles: 0,
+            ws_stale: false,
         }
     }
 
@@ -222,6 +244,10 @@ impl PerCoinState {
             freeze_direction: 0,
             favorable_cycles: 0,
             waiting_reason: String::new(),
+            mode: TradingMode::Coarse,
+            ofi_smooth: 0.0,
+            passive_unwind_cycles: 0,
+            ws_stale: false,
         }
     }
 
@@ -376,6 +402,67 @@ impl CoinStateMachine {
     /// Set or reset the post-unwind BUY-suppression cooldown to a fixed number of cycles.
     pub fn reset_unwind_cooldown(&mut self, coin: &str, cycles: u32) {
         self.get_or_init(coin).unwind_cooldown = cycles;
+    }
+
+    // ── V12.5: Passive Unwind escalation timeout ──
+
+    /// Increment passive unwind cycle counter. Returns true if timeout exceeded.
+    pub fn tick_passive_unwind(&mut self, coin: &str, max_cycles: u32) -> bool {
+        let cs = self.get_or_init(coin);
+        cs.passive_unwind_cycles += 1;
+        cs.passive_unwind_cycles >= max_cycles
+    }
+
+    /// Reset passive unwind counter (e.g. on state exit).
+    pub fn reset_passive_unwind(&mut self, coin: &str) {
+        self.get_or_init(coin).passive_unwind_cycles = 0;
+    }
+
+    /// Check if passive unwind timeout has been reached.
+    pub fn passive_unwind_timed_out(&mut self, coin: &str, max_cycles: u32) -> bool {
+        self.get_or_init(coin).passive_unwind_cycles >= max_cycles
+    }
+
+    // ── V12.5: Dual-Mode Routing + OFI Momentum Gate ──
+
+    /// Set the trading mode for a coin (Coarse or FineTick).
+    pub fn set_mode(&mut self, coin: &str, mode: TradingMode) {
+        self.get_or_init(coin).mode = mode;
+    }
+
+    /// Get the trading mode for a coin.
+    pub fn mode_of(&mut self, coin: &str) -> TradingMode {
+        self.get_or_init(coin).mode
+    }
+
+    /// Update OFI EMA: smooth = alpha * raw + (1-alpha) * prev
+    pub fn update_ofi(&mut self, coin: &str, raw_ofi: f64, alpha: f64) -> f64 {
+        let cs = self.get_or_init(coin);
+        cs.ofi_smooth = alpha * raw_ofi + (1.0 - alpha) * cs.ofi_smooth;
+        cs.ofi_smooth
+    }
+
+    /// Get current OFI smoothed value.
+    pub fn ofi_smooth(&mut self, coin: &str) -> f64 {
+        self.get_or_init(coin).ofi_smooth
+    }
+
+    // ── V12.6: WS Stale Detection ──
+
+    /// Mark WS position tracking as stale (chain drift detected).
+    /// Next cycle will cancel all orders and force REST resync.
+    pub fn mark_stale(&mut self, coin: &str) {
+        self.get_or_init(coin).ws_stale = true;
+    }
+
+    /// Check if WS tracking is stale for this coin.
+    pub fn is_stale(&mut self, coin: &str) -> bool {
+        self.get_or_init(coin).ws_stale
+    }
+
+    /// Clear the stale flag after resync.
+    pub fn clear_stale(&mut self, coin: &str) {
+        self.get_or_init(coin).ws_stale = false;
     }
 
     /// Is this coin in emergency shed mode?
