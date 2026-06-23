@@ -1184,7 +1184,7 @@ pub async fn run<A: MarketAdapter>(
                                 coin_state.reset_ask_rejections(coin);
                             }
                             Ok(OrderOutcome::Rejected(reason)) => {
-                                tracing::debug!(coin = %coin, ?reason, "buy order rejected");
+                                tracing::warn!(coin = %coin, ?reason, "buy order rejected");
                             }
                             Err(e) => tracing::warn!(coin = %coin, side = "BUY", ?e, "order error"),
                         }
@@ -1295,7 +1295,7 @@ pub async fn run<A: MarketAdapter>(
                                 );
                             }
                             Ok(OrderOutcome::Rejected(reason)) => {
-                                tracing::debug!(coin = %coin, ?reason, "sell order rejected");
+                                tracing::warn!(coin = %coin, ?reason, "sell order rejected");
                             }
                             Err(e) => tracing::warn!(coin = %coin, side = "SELL", ?e, "order error"),
                         }
