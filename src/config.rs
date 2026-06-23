@@ -78,29 +78,6 @@ pub struct Config {
     /// Max tick retreat attempts when Alo rejected with "would match"
     pub unwind_max_retreat_ticks: u32,
 
-    // ── V12.5: Dual-Mode Routing (Precision Arsenal) ──
-    /// Threshold for coarse vs fine-tick mode routing (bps).
-    /// tick_bps >= threshold → Coarse Mode (1-tick shading=0), < threshold → Fine-Tick Mode (multi-tick)
-    pub coarse_mode_threshold_bps: f64,
-    /// Fine-tick mode: passive unwind timeout cycles (default 60 ≈ 40s)
-    pub fine_unwind_timeout_cycles: u32,
-    /// V12.6: Fine-tick mode: spread below which GTC taker fires immediately in UNWIND (bps)
-    pub fine_unwind_gte_taker_bps: f64,
-    /// V12.6: Fine-tick mode: enable cross-spread Post-Only (pin to opposite BBO) in UNWIND
-    pub fine_unwind_cross_spread: bool,
-    /// V12.6: Fine-tick mode: adverse side size multiplier at max overload (0.05 = 95% reduction)
-    pub fine_size_decay: f64,
-    /// V12.6: Fine-tick mode: pos_ratio threshold where size decay begins (default 0.15 = 15%)
-    pub fine_pos_ratio_decay_knee: f64,
-    /// Fine-tick mode: max price retreat in ticks (default 6)
-    pub fine_max_defense_ticks: i32,
-    /// Fine-tick mode: position ratio per tick retreat (default 0.03 = 3%)
-    pub fine_skew_per_tick: f64,
-    /// Fine-tick mode: OFI imbalance threshold — absolute EMA value that triggers single-side cutoff
-    pub fine_ofi_threshold: f64,
-    /// Fine-tick mode: OFI EMA smoothing alpha (default 0.3)
-    pub fine_ofi_alpha: f64,
-
     // ── V12.2: Coarse-tick asymmetric sizing ──
     /// Position ratio threshold (abs) where asymmetric sizing begins. Default 0.05 (5%).
     pub coarse_pos_ratio_aggressive: f64,
@@ -133,7 +110,7 @@ impl Default for Config {
             ws_url: "wss://api.hyperliquid.xyz/ws".into(),
             address: String::new(),
             private_key: String::new(),
-            coins: vec!["HMSTR".into(), "RESOLV".into(), "MEME".into()],
+            coins: vec!["HMSTR".into()],
             growth_mode: true,
 
             skew_power: 2.5,
@@ -164,23 +141,11 @@ impl Default for Config {
             gate_block_ticks: 0,
             tsunami_ticks: 1,
             coarse_tick_bps_threshold: 15.0,
-            coarse_tick_size_pct: 0.80,
+            coarse_tick_size_pct: 0.30,
             coarse_tick_max_side_fills: 3,
             min_margin_bps: 2.0,
             spread_stable_cycles: 3,
             force_resync_interval: 20,
-
-            // V12.5: Dual-Mode Routing
-            coarse_mode_threshold_bps: 15.0,
-            fine_unwind_timeout_cycles: 60,
-            fine_unwind_gte_taker_bps: 15.0,
-            fine_unwind_cross_spread: true,
-            fine_size_decay: 0.05,
-            fine_pos_ratio_decay_knee: 0.15,
-            fine_max_defense_ticks: 6,
-            fine_skew_per_tick: 0.03,
-            fine_ofi_threshold: 0.7, // OFI ∈ [-1,1]; 0.7 = 85% depth on one side
-            fine_ofi_alpha: 0.3,
 
             // V12.2: asymmetric sizing for coarse-tick markets
             coarse_pos_ratio_aggressive: 0.05,

@@ -218,6 +218,11 @@ impl Executor {
             }
         }
 
+        // V12.4.1: HL API may return empty status {} — silent rejection
+        if rejection_reason.is_none() {
+            tracing::warn!(coin = %coin, is_buy = is_buy, statuses = ?statuses,
+                "order silently rejected (empty status)");
+        }
         Ok(OrderOutcome::Rejected(rejection_reason))
     }
 
@@ -353,6 +358,11 @@ impl Executor {
             }
         }
 
+        // V12.4.1: HL API may return empty status {} — silent rejection
+        if rejection_reason.is_none() {
+            tracing::warn!(coin = %coin, is_buy = is_buy, statuses = ?statuses,
+                "order silently rejected (empty status)");
+        }
         Ok(OrderOutcome::Rejected(rejection_reason))
     }
 
