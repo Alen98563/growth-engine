@@ -1,5 +1,4 @@
 //! Core Engine — per-coin state machine + risk loop + label recording.
-//! Version: V12.5 (dual-mode) | 19 defense layers
 //!
 //! The engine runs a continuous loop:
 //!
@@ -7,49 +6,25 @@
 //! cycle:
 //!   1. Fetch state (account + L2 books)
 //!   2. Read WS shock signal (P0: toxic burst detection)
-//!   3. Gate evaluation (CROSSED→THIN_SPREAD→COARSE→TSUNAMI→SNIPER→BLOCKED)
-//!   4. Place new orders FIRST (P0: place-before-cancel eliminates 150ms gap)
-//!   5. Cancel stale orders SECOND (P0: old orders still protect during place)
-//!   6. Check fills (order status API → position tracking)
-//!   7. Risk assess (cubic skew + asymmetric qty + shed/unwind check)
-//!   8. Portfolio limit check + portfolio-reduce bypass (V12.4)
-//!   9. Per-coin state transition (NORMAL→PASSIVE_UNWIND→EMERGENCY_IOC→COOLDOWN→WAITING)
-//!      With 20% hysteresis: enter UNWIND at <watermark>, exit at <watermark − hysteresis>
-//!  10. Log metrics (per-coin state shown)
-//!  11. Record label (CycleRecord → CSV)
-//!  12. Sleep (3-5s + jitter to avoid 429)
+//!   3. Place new orders FIRST (P0: place-before-cancel eliminates 150ms gap)
+//!   4. Cancel stale orders SECOND (P0: old orders still protect during place)
+//!   5. Risk assess (cubic skew + asymmetric qty + shed/unwind check)
+//!   6. Per-coin state transition logic
+//!      NORMAL(0-40%) → PASSIVE_UNWIND(40-90%) → EMERGENCY_IOC(90%+) → COOLDOWN
+//!      With 20% hysteresis: exit UNWIND at watermark − hysteresis
+//!   7. Log metrics  (per-coin state shown)
+//!   8. Record label (CycleRecord → CSV for ML pipeline)
+//!   9. Sleep (3-5s + jitter to avoid 429)
 //!
 //! Graceful shutdown: SIGTERM/SIGINT → cancel all open orders → exit.
-//!
-//! ## Key Architecture Decisions (V12.4)
-//!
-//! - **Place-before-cancel**: Orders placed first, then stale ones cancelled.
-//!   Eliminates the 150ms bare window where the book has no orders.
-//! - **Portfolio-reduce bypass**: When aggregate notional exceeds the hard limit
-//!   (60% equity default), position-reducing orders are still allowed. LONG positions
-//!   can only SELL; SHORT positions can only BUY. Flat coins are blocked.
-//!   This fixes the restart deadlock where no coin individually exceeds the 40%
-//!   unwind threshold but the aggregate portfolio is over limit.
-//! - **Gate runs BEFORE state transitions**: Spread conditions evaluated per-cycle;
-//!   state transitions follow. A BLOCKED coin can still transition to UNWIND
-//!   (unwind bypasses the gate for survival).
-//! - **THIN_SPREAD gate (V12.3)**: Coins where gross_bps < maker_fee + min_margin
-//!   are blocked automatically. Prevents fine-tick coins (RESOLV 0.46 bps) from
-//!   trading at negative net spread.
-//! - **COARSE dual-axis gate (V12.1)**: 1-tick coins with bps >= 15 enter reduced
-//!   (30%) COARSE harvest mode with zero shading and asymmetric sizing.
-//! - **Crossed-book gate (V12)**: When REST L2 returns best_ask ≤ best_bid,
-//!   the market is untradeable for Post-Only makers → BLOCKED.
-//! - **Shading cap (V12)**: Coarse-tick coins (gross_bps ≥ 30) have shading offset
-//!   capped at 1 tick to prevent suicidal over-isolation.
 //! ```
 
 use crate::config::Config;
 use crate::labeler::{CycleRecord, Labeler};
 use crate::risk::RiskEngine;
-use crate::state::{CoinStateMachine, State, TradingMode};
+use crate::state::{CoinStateMachine, State};
 use crate::traits::MarketAdapter;
-use crate::types::{L2Book, MarketShockSignal, OrderOutcome, SignalBus};
+use crate::types::{MarketShockSignal, OrderOutcome, SignalBus};
 use anyhow::Result;
 use std::collections::HashMap;
 use futures_util::FutureExt;
@@ -288,7 +263,7 @@ pub async fn run<A: MarketAdapter>(
             metrics.withdrawable = account.withdrawable;
             metrics.equity = account.equity;
 
-            let mut pos = account.positions.iter()
+            let pos = account.positions.iter()
                 .find(|p| &p.coin == coin).cloned().unwrap_or_default();
 
             // ── P0+: Detect position changes missed by WS fill events ──
@@ -304,52 +279,16 @@ pub async fn run<A: MarketAdapter>(
                             to = chain_size,
                             "CHAINT POSITION DRIFT: WS fill event missed, {:.4} position change", delta
                         );
-                        // V12.6: Mark WS tracking as stale → force cancel + resync next cycle
-                        coin_state.mark_stale(coin);
                     }
                 }
                 last_known_position.insert(coin.clone(), chain_size);
             }
 
-            // ── V12.5: Dual-Mode Routing ──
-            // Compute tick granularity and route to correct trading mode.
-            let coin_tick = cfg.tick_for(coin);
-            let mid_for_check = book.mid_price().unwrap_or(0.0);
-            let tick_bps = if mid_for_check > 0.0 {
-                (coin_tick / mid_for_check) * 10000.0
-            } else {
-                0.0
-            };
-            let mode = if tick_bps >= cfg.coarse_mode_threshold_bps {
-                TradingMode::Coarse
-            } else {
-                TradingMode::FineTick
-            };
-            coin_state.set_mode(coin, mode);
-            tracing::debug!(coin=%coin, tick_bps=%format!("{:.2}", tick_bps), ?mode, "V12.5 mode routed");
-
             // ── V12 动态阶梯闸门 + Crossed-Book 检测 ──
+            let coin_tick = cfg.tick_for(coin);
             // V12: Detect crossed book (best_ask <= best_bid). REST-verified, NOT local desync.
             // In a CLOB, crossed books mean ghost liquidity — real trades happen at the crossing
             // point, which Post-Only orders can never reach. Force GATE_BLOCKED.
-            // ── V12.5: OFI Momentum Gate (fine-tick mode only) ──
-            if mode == TradingMode::FineTick {
-                let (ofi, bid_churn, ask_churn) = compute_ofi_imbalance(&book);
-                let ofi_smooth = coin_state.update_ofi(coin, ofi, cfg.fine_ofi_alpha);
-                let ofi_cutoff = ofi_smooth.abs() > cfg.fine_ofi_threshold;
-                if ofi_cutoff {
-                    let direction = if ofi_smooth > 0.0 { "BULLISH" } else { "BEARISH" };
-                    tracing::warn!(
-                        coin=%coin, ofi_raw=%format!("{:.3}", ofi),
-                        ofi_smooth=%format!("{:.3}", ofi_smooth),
-                        bid_depth=%format!("{:.1}", bid_churn),
-                        ask_depth=%format!("{:.1}", ask_churn),
-                        direction,
-                        "OFI GATE: momentum imbalance -> single-side cutoff active"
-                    );
-                }
-            }
-
             let (gross_ticks, book_crossed) = match (book.best_bid(), book.best_ask()) {
                 (Some(bid), Some(ask)) if ask > bid => ((ask - bid) / coin_tick.max(1e-9), false),
                 (Some(_bid), Some(_ask)) => (0.0, true),
@@ -719,19 +658,6 @@ pub async fn run<A: MarketAdapter>(
 
             // Tick post-UNWIND cooldown (after all state transitions)
             coin_state.tick_unwind_cooldown(coin);
-            // V12.5: Tick passive unwind counter (mode-specific timeout)
-            if coin_state.is_unwind(coin) {
-                let timeout = if coin_state.mode_of(coin) == TradingMode::FineTick {
-                    cfg.fine_unwind_timeout_cycles
-                } else {
-                    0 // Coarse mode has no passive phase, goes directly to GTC
-                };
-                if timeout > 0 {
-                    coin_state.tick_passive_unwind(coin, timeout);
-                }
-            } else {
-                coin_state.reset_passive_unwind(coin);
-            }
 
             // ── V9 Directional Freeze: after flip, BAN opposite-side opens for N cycles ──
             let current_pos_sign = if pos.size > 0.001 { 1 }
@@ -790,18 +716,16 @@ pub async fn run<A: MarketAdapter>(
                 risk_out.sell_sz * cs.size_multiplier
             };
                 if is_frozen {
-                    // V12.6-hotfix: DirectionalFreeze suspended during UNWIND.
-                    // Rescuing the position has priority over flip-hysteresis.
-                    if !is_unwind {
-                        if freeze_dir == -1 { buy_sz = 0.0; }
-                        if freeze_dir == 1  { sell_sz = 0.0; }
-                    }
+                    // Freeze direction is the NEW direction after flip.
+                    // If we flipped TO LONG (freeze_dir=1): ban SELL (which opens SHORT).
+                    // If we flipped TO SHORT (freeze_dir=-1): ban BUY (which opens LONG).
+                    if freeze_dir == -1 { buy_sz = 0.0; }  // SHORT freeze: no BUY
+                    if freeze_dir == 1  { sell_sz = 0.0; } // LONG freeze: no SELL
                     tracing::info!(
                         coin = %coin,
                         freeze_dir,
                         buy_sz,
                         sell_sz,
-                        is_unwind,
                         "directional freeze: opposite side BANNED"
                     );
                 }
@@ -889,212 +813,6 @@ pub async fn run<A: MarketAdapter>(
                 // P0: Collect new order OIDs in a separate vec to detect double-fill
                 let mut new_oids: Vec<u64> = Vec::new();
 
-                if mode == TradingMode::FineTick {
-                    // ── V12.6: WS Stale Meltdown — cancel all, skip cycle if drift detected ──
-                    if coin_state.is_stale(coin) {
-                        tracing::error!(coin=%coin,
-                            "WS STALE MELTDOWN: cancelling all orders, skipping cycle, forcing REST resync");
-                        if let Err(e) = adapter.cancel_all_for_coin(coin).await {
-                            tracing::warn!(coin=%coin, ?e, "cancel-all failed during meltdown");
-                        }
-                        // Force REST resync in next cycle
-                        last_known_position.remove(coin);
-                        coin_state.clear_stale(coin);
-                        // Recompute position from chain (REST) for this cycle
-                        if let Some(p) = account.positions.iter().find(|p| &p.coin == coin) {
-                            pos = p.clone();
-                            last_known_position.insert(coin.clone(), pos.size);
-                        }
-                        continue; // Skip this coin's cycle entirely
-                    }
-
-                    // ── V12.5: Fine-Tick Mode Order Placement ──
-                    // Multi-tick pricing + OFI gate + passive unwind
-                    let mid_for_sz = book.mid_price().unwrap_or(0.0);
-                    let base_sz = if mid_for_sz > 0.0 {
-                        cfg.base_order_notional / mid_for_sz
-                    } else {
-                        risk_out.buy_sz.max(risk_out.sell_sz).max(1.0)
-                    };
-                    let (ft_bid_px, ft_ask_px, ft_bid_sz, ft_ask_sz, oft_freeze_bid, oft_freeze_ask) =
-                        compute_fine_tick_pricing(
-                            &book, pos.size, risk_out.position_ratio,
-                            base_sz, coin_tick,
-                            cfg.fine_max_defense_ticks, cfg.fine_skew_per_tick,
-                            is_unwind,
-                        );
-
-                    // V12.6-hotfix: Size Decimation — adverse side nano-sizing at extreme overload
-                    // Fixed: use pos.size SIGN (not absolue ratio) to determine direction.
-                    // SHORT pos.size < 0 → decimate SELL; LONG pos.size > 0 → decimate BUY.
-                    let mut ft_bid_sz = ft_bid_sz;
-                    let mut ft_ask_sz = ft_ask_sz;
-                    let pos_ratio_abs = risk_out.position_ratio.abs();
-                    if pos_ratio_abs > cfg.fine_pos_ratio_decay_knee {
-                        let floor_sz = base_sz * 0.02; // 2% absolute floor for scout orders
-                        if pos.size > 0.001 {
-                            // LONG overload: decimate BUY (adverse) size
-                            let old = ft_bid_sz;
-                            ft_bid_sz = (ft_bid_sz * cfg.fine_size_decay).max(floor_sz);
-                            let pos_pct = format!("{:.1}%", pos_ratio_abs * 100.0);
-                            tracing::debug!(coin=%coin, pos_ratio=%pos_pct, pos_size=%format!("{:.4}", pos.size),
-                                buy_before=%format!("{:.4}", old), buy_after=%format!("{:.4}", ft_bid_sz),
-                                "size decay: LONG→decimate BUY side");
-                        } else if pos.size < -0.001 {
-                            // SHORT overload: decimate SELL (adverse) size
-                            let old = ft_ask_sz;
-                            ft_ask_sz = (ft_ask_sz * cfg.fine_size_decay).max(floor_sz);
-                            let pos_pct = format!("{:.1}%", pos_ratio_abs * 100.0);
-                            tracing::debug!(coin=%coin, pos_ratio=%pos_pct, pos_size=%format!("{:.4}", pos.size),
-                                sell_before=%format!("{:.4}", old), sell_after=%format!("{:.4}", ft_ask_sz),
-                                "size decay: SHORT→decimate SELL side");
-                        }
-                    }
-
-                    let ft_buy_sz = buy_sz.min(ft_bid_sz);
-                    let ft_sell_sz = sell_sz.min(ft_ask_sz);
-
-                    // V12.6-hotfix: OFI gate — COMPLETELY BYPASSED during UNWIND
-                    // Unwinding must NEVER be blocked by momentum signals.
-                    // During normal operation, OFI blocks adverse-side orders.
-                    let ofi_val = coin_state.ofi_smooth(coin);
-                    let (needs_buy, needs_sell) = (
-                        pos.size < -0.001,     // SHORT → needs BUY to unwind
-                        pos.size > 0.001,      // LONG  → needs SELL to unwind
-                    );
-                    let ofi_block_buy = if is_unwind {
-                        false  // UNWIND: never block the rescue side
-                    } else {
-                        oft_freeze_bid || (ofi_val < -cfg.fine_ofi_threshold)
-                    };
-                    let ofi_block_sell = if is_unwind {
-                        false  // UNWIND: never block the rescue side
-                    } else {
-                        oft_freeze_ask || (ofi_val > cfg.fine_ofi_threshold)
-                    };
-
-                    tracing::info!(
-                        coin=%coin, ft_bid_px, ft_ask_px,
-                        ft_buy_sz, ft_sell_sz,
-                        pos_size=%format!("{:.4}", pos.size), ofi=%format!("{:.3}", ofi_val),
-                        needs_buy, needs_sell, block_buy=ofi_block_buy, block_sell=ofi_block_sell,
-                        is_unwind, "fine-tick pricing"
-                    );
-
-                    // V12.6: UNWIND BUY with spread-based GTC escalation + cross-spread
-                    if !freeze_buy && !ofi_block_buy && ft_buy_sz > 0.0 {
-                        let spread_bps = risk_out.gross_spread_bps;
-                        let (effective_px, use_gtc) = if is_unwind {
-                            let timed_out = coin_state.passive_unwind_timed_out(
-                                coin, cfg.fine_unwind_timeout_cycles);
-                            if spread_bps <= cfg.fine_unwind_gte_taker_bps {
-                                // V12.6: Spread too tight → immediate GTC taker (cheap insurance)
-                                tracing::warn!(coin=%coin, spread_bps=%format!("{:.1}", spread_bps),
-                                    "FINE UNWIND BUY: spread {:.1} <= {:.1} bps -> GTC taker now",
-                                    spread_bps, cfg.fine_unwind_gte_taker_bps);
-                                (book.best_ask().unwrap_or(ft_bid_px), true)
-                            } else if timed_out {
-                                tracing::warn!(coin=%coin, cycles=%cfg.fine_unwind_timeout_cycles,
-                                    "FINE UNWIND BUY TIMEOUT -> GTC taker");
-                                (book.best_ask().unwrap_or(ft_bid_px), true)
-                            } else if cfg.fine_unwind_cross_spread {
-                                // V12.6: Cross-spread Post-Only — pin to best_bid (queue selection)
-                                (ft_bid_px.max(book.best_bid().unwrap_or(ft_bid_px)), false)
-                            } else {
-                                (ft_bid_px.max(book.best_bid().unwrap_or(ft_bid_px)), false)
-                            }
-                        } else {
-                            (ft_bid_px, false)
-                        };
-
-                        if use_gtc {
-                            match adapter.place_gtc_order(coin, true, ft_buy_sz, effective_px, false).await {
-                                Ok(OrderOutcome::Rested(oid)) => { new_oids.push(oid); metrics.placed_buy = true; }
-                                Ok(OrderOutcome::FilledTaker) => {
-                                    metrics.placed_buy = true;
-                                    tracing::info!(coin=%coin, "fine unwind BUY filled taker");
-                                }
-                                Ok(OrderOutcome::Rejected(r)) =>
-                                    tracing::warn!(coin=%coin, ?r, "fine unwind BUY rejected"),
-                                Err(e) => tracing::warn!(coin=%coin, ?e, "fine unwind BUY error"),
-                            }
-                        } else {
-                            match adapter.place_limit_order(coin, true, ft_buy_sz, effective_px, false).await {
-                                Ok(OrderOutcome::Rested(oid)) => {
-                                    new_oids.push(oid); metrics.placed_buy = true;
-                                    if is_unwind {
-                                        tracing::info!(coin=%coin, px=%format!("{:.6}", effective_px),
-                                            sz=%format!("{:.4}", ft_buy_sz),
-                                            "fine passive unwind BUY posted at best_bid");
-                                    }
-                                }
-                                Ok(OrderOutcome::FilledTaker) => { metrics.placed_buy = true; }
-                                Ok(OrderOutcome::Rejected(r)) =>
-                                    tracing::debug!(coin=%coin, ?r, "fine BUY rejected"),
-                                Err(e) => tracing::warn!(coin=%coin, ?e, "fine BUY error"),
-                            }
-                        }
-                    }
-
-                    // V12.6: UNWIND SELL with spread-based GTC escalation + cross-spread
-                    if !freeze_sell && !ofi_block_sell && ft_sell_sz > 0.0 {
-                        let spread_bps = risk_out.gross_spread_bps;
-                        let (effective_px, use_gtc) = if is_unwind {
-                            let timed_out = coin_state.passive_unwind_timed_out(
-                                coin, cfg.fine_unwind_timeout_cycles);
-                            if spread_bps <= cfg.fine_unwind_gte_taker_bps {
-                                // V12.6: Spread too tight → immediate GTC taker
-                                tracing::warn!(coin=%coin, spread_bps=%format!("{:.1}", spread_bps),
-                                    "FINE UNWIND SELL: spread {:.1} <= {:.1} bps -> GTC taker now",
-                                    spread_bps, cfg.fine_unwind_gte_taker_bps);
-                                (book.best_bid().unwrap_or(ft_ask_px), true)
-                            } else if timed_out {
-                                tracing::warn!(coin=%coin, cycles=%cfg.fine_unwind_timeout_cycles,
-                                    "FINE UNWIND SELL TIMEOUT -> GTC taker");
-                                (book.best_bid().unwrap_or(ft_ask_px), true)
-                            } else if cfg.fine_unwind_cross_spread {
-                                // V12.6: Cross-spread Post-Only — pin to best_ask (queue selection)
-                                (ft_ask_px.min(book.best_ask().unwrap_or(ft_ask_px)), false)
-                            } else {
-                                (ft_ask_px.min(book.best_ask().unwrap_or(ft_ask_px)), false)
-                            }
-                        } else {
-                            (ft_ask_px, false)
-                        };
-
-                        if use_gtc {
-                            match adapter.place_gtc_order(coin, false, ft_sell_sz, effective_px, false).await {
-                                Ok(OrderOutcome::Rested(oid)) => { new_oids.push(oid); metrics.placed_sell = true; }
-                                Ok(OrderOutcome::FilledTaker) => {
-                                    metrics.placed_sell = true;
-                                    tracing::info!(coin=%coin, "fine unwind SELL filled taker");
-                                }
-                                Ok(OrderOutcome::Rejected(r)) =>
-                                    tracing::warn!(coin=%coin, ?r, "fine unwind SELL rejected"),
-                                Err(e) => tracing::warn!(coin=%coin, ?e, "fine unwind SELL error"),
-                            }
-                        } else {
-                            match adapter.place_limit_order(coin, false, ft_sell_sz, effective_px, false).await {
-                                Ok(OrderOutcome::Rested(oid)) => {
-                                    new_oids.push(oid); metrics.placed_sell = true;
-                                    if is_unwind {
-                                        tracing::info!(coin=%coin, px=%format!("{:.6}", effective_px),
-                                            sz=%format!("{:.4}", ft_sell_sz),
-                                            "fine passive unwind SELL posted at best_ask");
-                                    }
-                                }
-                                Ok(OrderOutcome::FilledTaker) => { metrics.placed_sell = true; }
-                                Ok(OrderOutcome::Rejected(r)) =>
-                                    tracing::debug!(coin=%coin, ?r, "fine SELL rejected"),
-                                Err(e) => tracing::warn!(coin=%coin, ?e, "fine SELL error"),
-                            }
-                        }
-                    }
-
-                    metrics.size_multiplier = 1.0;
-                    metrics.gate_mode = "FINE_TICK".to_string();
-                } else {
-                    // ── V12.4: Coarse Mode Order Placement (unchanged) ──
                 // Place BUY order
                 if !freeze_buy && buy_sz > 0.0 {
                     let cs = coin_state.get_or_init(coin);
@@ -1184,7 +902,7 @@ pub async fn run<A: MarketAdapter>(
                                 coin_state.reset_ask_rejections(coin);
                             }
                             Ok(OrderOutcome::Rejected(reason)) => {
-                                tracing::warn!(coin = %coin, ?reason, "buy order rejected");
+                                tracing::debug!(coin = %coin, ?reason, "buy order rejected");
                             }
                             Err(e) => tracing::warn!(coin = %coin, side = "BUY", ?e, "order error"),
                         }
@@ -1295,7 +1013,7 @@ pub async fn run<A: MarketAdapter>(
                                 );
                             }
                             Ok(OrderOutcome::Rejected(reason)) => {
-                                tracing::warn!(coin = %coin, ?reason, "sell order rejected");
+                                tracing::debug!(coin = %coin, ?reason, "sell order rejected");
                             }
                             Err(e) => tracing::warn!(coin = %coin, side = "SELL", ?e, "order error"),
                         }
@@ -1303,7 +1021,6 @@ pub async fn run<A: MarketAdapter>(
                 }
 
                 // ── P0: NOW cancel old orders (new orders already resting) ──
-                } // close V12.5 Coarse Mode else block
                 cancel_active_orders(&mut adapter, coin, &mut active_orders).await;
 
                 // P0: Merge new OIDs into active_orders
@@ -1556,92 +1273,6 @@ async fn cancel_active_orders<A: MarketAdapter>(
             tracing::warn!(coin = %c, oid = oid, ?e, "cancel failed");
         }
     }
-}
-
-/// V12.5: Fine-tick multi-tick pricing (Avellaneda-Stoikov discretized).
-///
-/// Key invariant: bid and ask shift TOGETHER (same offset direction),
-/// keeping spread constant while moving the entire quote band.
-/// Unwind side PINNED to best price (never retreats), adverse side decays.
-#[allow(clippy::too_many_arguments)]
-fn compute_fine_tick_pricing(
-    book: &L2Book,
-    pos_size: f64,
-    pos_ratio: f64,
-    base_sz: f64,
-    coin_tick: f64,
-    max_defense_ticks: i32,
-    skew_per_tick: f64,
-    is_unwind: bool,
-) -> (f64, f64, f64, f64, bool, bool) {
-    // Returns: (bid_px, ask_px, bid_sz, sell_sz, freeze_bid, freeze_ask)
-    let best_bid = match book.best_bid() {
-        Some(p) if p > 0.0 => p,
-        _ => return (0.0, 0.0, 0.0, 0.0, true, true),
-    };
-    let best_ask = match book.best_ask() {
-        Some(p) if p > 0.0 => p,
-        _ => return (0.0, 0.0, 0.0, 0.0, true, true),
-    };
-
-    // 1. Inventory-driven tick skew: every skew_per_tick fraction -> retreat 1 tick
-    let raw_skew_ticks = (pos_ratio / skew_per_tick.max(1e-9)).round() as i32;
-    let clamped = raw_skew_ticks.clamp(-max_defense_ticks, max_defense_ticks);
-
-    // 2. Both bid and ask shift together (Avellaneda signature)
-    let offset = clamped as f64 * coin_tick;
-    let mut bid_px = best_bid - offset;
-    let mut ask_px = best_ask - offset;
-    let mut bid_sz = base_sz;
-    let mut ask_sz = base_sz;
-    let mut freeze_bid = false;
-    let mut freeze_ask = false;
-
-    // 3. Position-driven asymmetric sizing + pinning
-    if pos_size < -0.001 {
-        // SHORT: need to buy back -> BUY side is unwind, pin to best_bid
-        if bid_px < best_bid { bid_px = best_bid; }
-        let decay = (pos_ratio.abs() * 8.0).min(0.85);
-        ask_sz = base_sz * (1.0 - decay);
-        if is_unwind {
-            freeze_ask = true;
-            bid_sz *= 1.5;
-        }
-    } else if pos_size > 0.001 {
-        // LONG: need to sell off -> SELL side is unwind, pin to best_ask
-        if ask_px > best_ask { ask_px = best_ask; }
-        let decay = (pos_ratio * 8.0).min(0.85);
-        bid_sz = base_sz * (1.0 - decay);
-        if is_unwind {
-            freeze_bid = true;
-            ask_sz *= 1.5;
-        }
-    }
-
-    // 4. Safety clamp: never cross the book
-    if bid_px >= ask_px {
-        bid_px = best_bid;
-        ask_px = best_ask;
-    }
-
-    (bid_px, ask_px, bid_sz, ask_sz, freeze_bid, freeze_ask)
-}
-
-/// V12.5: Compute Order Flow Imbalance for momentum-based single-side cutoff.
-///
-/// OFI = (bid_depth - ask_depth) / (bid_depth + ask_depth)  -> [-1, 1]
-///
-/// Positive OFI = bid side dominant -> bullish -> safe to BID, cut ASK
-/// Negative OFI = ask side dominant -> bearish -> safe to ASK, cut BID
-fn compute_ofi_imbalance(book: &L2Book) -> (f64, f64, f64) {
-    let total_bid = book.total_bid_depth();
-    let total_ask = book.total_ask_depth();
-    let total = total_bid + total_ask;
-    if total <= 0.0 {
-        return (0.0, 0.0, 0.0);
-    }
-    let ofi = (total_bid - total_ask) / total;
-    (ofi, total_bid, total_ask)
 }
 
 fn calculate_bid_tick_offset(ask_rejections: u32, skew_bps: f64) -> u32 {
