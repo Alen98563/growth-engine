@@ -32,6 +32,7 @@ pub mod levels;
 pub mod order_book;
 pub mod risk;
 pub mod signer;
+pub mod sniper;
 pub mod state;
 pub mod traits;
 pub mod types;

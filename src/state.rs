@@ -139,6 +139,12 @@ pub struct PerCoinState {
     pub freeze_remaining: u32,
     /// Direction being frozen: -1=SHORT (no BUY), 1=LONG (no SELL), 0=none
     pub freeze_direction: i8,
+    /// V12.7: Flip rate brake — count flips in rolling 100-cycle window.
+    /// Bits 0..99 track which cycles had a direction flip. If >= 3 flips
+    /// in 100 cycles, the coin is forced into extended cooldown (300 cycles).
+    pub recent_flips: u128,
+    /// Cycle counter for flip brake window
+    pub flip_brake_cycle: u64,
     /// Gate tier mode: "TSUNAMI" | "SNIPER" | "BLOCKED"
     pub gate_mode: String,
     /// Size multiplier from gate tier (1.0 / 0.4 / 0.0)
@@ -169,9 +175,12 @@ impl PerCoinState {
             last_flip_cycle: 0,
             freeze_remaining: 0,
             freeze_direction: 0,
+            recent_flips: 0,
+            flip_brake_cycle: 0,
             favorable_cycles: 0,
             waiting_reason: String::new(),
         }
+
     }
 
     /// Create a PerCoinState with a pre-set state — used by bootstrap recovery
@@ -193,6 +202,8 @@ impl PerCoinState {
             last_flip_cycle: 0,
             freeze_remaining: 0,
             freeze_direction: 0,
+            recent_flips: 0,
+            flip_brake_cycle: 0,
             favorable_cycles: 0,
             waiting_reason: String::new(),
         }
@@ -249,6 +260,7 @@ impl CoinStateMachine {
     pub fn transition(&mut self, coin: &str, next: State) {
         let cs = self.get_or_init(coin);
         if cs.state != next {
+            cs.cold_start_cycles = 0; // V12.5: reset cold start counter on transition
             cs.ask_rejections = 0; // fresh start in new state
             cs.buy_fills_tally = 0;  // V12.1: reset fill tallies
             cs.sell_fills_tally = 0;
@@ -430,6 +442,29 @@ impl CoinStateMachine {
     }
 
     // ── V8 Flip Hysteresis: prevent directional whiplash ──
+
+    /// V12.7: Check if flip rate is too high — returns true if coin should be
+    /// forced into extended cooldown (300-cycle freeze).
+    pub fn check_flip_brake(&mut self, coin: &str) -> bool {
+        let cs = self.get_or_init(coin);
+        cs.flip_brake_cycle += 1;
+        // Shift window: keep only last 100 cycles
+        if cs.flip_brake_cycle % 100 == 0 {
+            cs.recent_flips = 0;
+        }
+        // Count ones in window (max 100)
+        let flip_count = cs.recent_flips.count_ones();
+        flip_count >= 3 && cs.flip_brake_cycle > 50
+    }
+
+    /// Record a flip in the brake window
+    pub fn record_flip(&mut self, coin: &str) {
+        let cs = self.get_or_init(coin);
+        let pos = (cs.flip_brake_cycle % 100) as u32;
+        cs.recent_flips |= 1u128 << pos;
+        tracing::warn!(coin=%coin, flip_count=cs.recent_flips.count_ones(),
+            cycle=cs.flip_brake_cycle, "V12.7 FLIP BRAKE: flip recorded");
+    }
 
     /// Set flip lock for FLIP_LOCK_CYCLES. Called when position sign flips.
     pub fn set_freeze(&mut self, coin: &str, direction: i8) {
