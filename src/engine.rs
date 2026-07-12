@@ -26,7 +26,7 @@ use crate::state::{CoinStateMachine, State};
 use crate::traits::MarketAdapter;
 use crate::types::{MarketShockSignal, OrderOutcome, SignalBus};
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use futures_util::FutureExt;
 use rand::Rng;
 use tokio::signal;
@@ -77,7 +77,9 @@ pub async fn run<A: MarketAdapter>(
         let mut coin_state = CoinStateMachine::new();
     // P0+: Track chain position between cycles to detect WS-missed fills
     let mut last_known_position: HashMap<String, f64> = HashMap::new();
-    let mut last_pos_sign: HashMap<String, i32> = HashMap::new();
+    // V12.6: directional freeze removed
+    // P1: Coins that just had a WS drift — will be gracefully cold-restarted instead of hard-killed
+    let mut ws_drift_coins: HashSet<String> = HashSet::new();
     let mut rng = rand::thread_rng();
 
     // B0: Bootstrap — recover existing exchange positions into FSM at cold start
@@ -267,6 +269,9 @@ pub async fn run<A: MarketAdapter>(
                 .find(|p| &p.coin == coin).cloned().unwrap_or_default();
 
             // ── P0+: Detect position changes missed by WS fill events ──
+            // P1: When WS misses a fill, gracefully cold-restart the coin
+            //     instead of triggering hard-kill / PASSIVE_UNWIND / GTC taker.
+            //     The WS miss is a transient transport gap, not a toxic event.
             {
                 let chain_size = pos.size;
                 if let Some(&last) = last_known_position.get(coin) {
@@ -279,6 +284,18 @@ pub async fn run<A: MarketAdapter>(
                             to = chain_size,
                             "CHAINT POSITION DRIFT: WS fill event missed, {:.4} position change", delta
                         );
+                        // P1: Mark for graceful cold restart — skip hard-kill / UNWIND
+                        // Cancel stale orders and resync like a fresh startup
+                        if matches!(coin_state.state_of(coin), State::Active) {
+                            tracing::info!(
+                                coin = %coin,
+                                delta,
+                                "WS drift detected in Active state — graceful cold restart (not toxic)"
+                            );
+                            ws_drift_coins.insert(coin.clone());
+                            // Immediately cancel all stale orders for this coin
+                            adapter.cancel_all_for_coin(coin).await.ok();
+                        }
                     }
                 }
                 last_known_position.insert(coin.clone(), chain_size);
@@ -400,7 +417,17 @@ pub async fn run<A: MarketAdapter>(
                 }
 
                 State::Active => {
-                    if risk_out.should_shed {
+                    // P1: WS drift detected → graceful cold restart, NOT hard-kill
+                    // This prevents GTC-taker unwinding on transient WS fill misses.
+                    if ws_drift_coins.remove(coin) {
+                        tracing::info!(
+                            coin = %coin,
+                            position_ratio = ?risk_out.position_ratio,
+                            "WS drift: skipping UNWIND, graceful ColdStart resync"
+                        );
+                        // Reset cold_start counter and enter ColdStart
+                        coin_state.transition(coin, State::ColdStart);
+                    } else if risk_out.should_shed {
                         tracing::warn!(
                             coin = %coin,
                             position_ratio = risk_out.position_ratio,
@@ -425,9 +452,9 @@ pub async fn run<A: MarketAdapter>(
                                 coin = %coin,
                                 position_ratio = risk_out.position_ratio,
                                 watermark = %cfg.passive_unwind_watermark,
-                                "entering PASSIVE_UNWIND"
+                                "V12.6: UNWIND replaced by ColdStart (no GTC taker cross-spread)"
                             );
-                            coin_state.transition(coin, State::Unwind);
+                            coin_state.transition(coin, State::ColdStart);
                         }
                         // Active but conditions deteriorated -> Waiting
                         let rtc = cfg.roundtrip_bps();
@@ -659,28 +686,33 @@ pub async fn run<A: MarketAdapter>(
             // Tick post-UNWIND cooldown (after all state transitions)
             coin_state.tick_unwind_cooldown(coin);
 
-            // ── V9 Directional Freeze: after flip, BAN opposite-side opens for N cycles ──
-            let current_pos_sign = if pos.size > 0.001 { 1 }
-                else if pos.size < -0.001 { -1 }
-                else { 0 };
-            if current_pos_sign != 0 {
-                let is_frozen = coin_state.is_frozen(coin);
-                let has_sign = last_pos_sign.get(coin).copied().unwrap_or(0) != 0;
-                let sign_changed = current_pos_sign != last_pos_sign.get(coin).copied().unwrap_or(0);
-                let did_flip = !is_frozen && sign_changed && has_sign;
-                if did_flip {
-                    tracing::warn!(
-                        coin = %coin,
-                        old_sign = last_pos_sign.get(coin).copied().unwrap_or(0),
-                        new_sign = current_pos_sign,
-                        pos_size = pos.size,
-                        "FLIP DETECTED -> directional freeze 50 cycles (ban opposite side)"
-                    );
-                    coin_state.set_freeze(coin, current_pos_sign as i8);
-                }
-                last_pos_sign.insert(coin.clone(), current_pos_sign);
-            }
+            // V9 Directional Freeze removed (V12.6)
             coin_state.tick_freeze(coin);
+
+            // V12.7: Flip rate brake — if >2 flips in 100 cycles, force cooldown
+            let flip_braked = coin_state.check_flip_brake(coin);
+            if flip_braked {
+                tracing::error!(coin=%coin, "V12.7 FLIP BRAKE TRIGGERED: 300-cycle cooldown");
+                // Force into GateBlocked → will cancel all orders + wait
+                if !coin_state.is_gate_blocked(coin) {
+                    coin_state.enter_gate_blocked(coin, "FLIP_BRAKE");
+                }
+            }
+
+            // V12.7: Single-coin exposure cap — force this coin to reduce-only
+            // if its notional exceeds INDIVIDUAL_COIN_CAP fraction of equity.
+            // Prevents the 6/29 rampage where HMSTR went from $5→$54 (33% equity).
+            const INDIVIDUAL_COIN_CAP: f64 = 0.20;
+            let coin_notional_ratio = (pos.size.abs() * (risk_out.bid_px + risk_out.ask_px) / 2.0) / account.equity.max(1.0);
+            let coin_over_exposed = coin_notional_ratio > INDIVIDUAL_COIN_CAP;
+            if coin_over_exposed {
+                tracing::warn!(
+                    coin = %coin,
+                    notional_ratio_pct = %format!("{:.1}", coin_notional_ratio * 100.0),
+                    cap_pct = 20.0,
+                    "V12.7 SINGLE-COIN CAP: forcing reduce-only"
+                );
+            }
 
             // ── 5. P0: Place orders BEFORE cancel (eliminates 150ms bare window) ──
             // V12.4: Portfolio-over-limit no longer blocks position-reducing orders.
@@ -688,7 +720,7 @@ pub async fn run<A: MarketAdapter>(
             // qty" progressive rebalancing IS a reducing action — blocking it creates
             // a deadlock where no coin enters UNWIND individually but aggregate is over limit.
             let can_place = coin_state.can_place_orders(coin);
-            let portfolio_reduce = portfolio_over_limit && pos.size.abs() > 0.001;
+            let portfolio_reduce = (portfolio_over_limit || coin_over_exposed) && pos.size.abs() > 0.001;
             if portfolio_reduce {
                 tracing::warn!(
                     coin = %coin,
@@ -704,9 +736,7 @@ pub async fn run<A: MarketAdapter>(
             let min_spread = roundtrip + cfg.min_margin_bps;
             let spread_ok = risk_out.net_spread_bps > min_spread;
             if (can_place && spread_ok) || is_unwind || portfolio_reduce {
-                // V9 Directional Freeze: ban opposite-side opens (Path B)
-                let freeze_dir = coin_state.freeze_direction_for(coin);
-                let is_frozen = coin_state.is_frozen(coin);
+                // V12.6: directional freeze ban removed
                 let mut buy_sz = {
                 let cs = coin_state.get_or_init(coin);
                 risk_out.buy_sz * cs.size_multiplier
@@ -715,20 +745,6 @@ pub async fn run<A: MarketAdapter>(
                 let cs = coin_state.get_or_init(coin);
                 risk_out.sell_sz * cs.size_multiplier
             };
-                if is_frozen {
-                    // Freeze direction is the NEW direction after flip.
-                    // If we flipped TO LONG (freeze_dir=1): ban SELL (which opens SHORT).
-                    // If we flipped TO SHORT (freeze_dir=-1): ban BUY (which opens LONG).
-                    if freeze_dir == -1 { buy_sz = 0.0; }  // SHORT freeze: no BUY
-                    if freeze_dir == 1  { sell_sz = 0.0; } // LONG freeze: no SELL
-                    tracing::info!(
-                        coin = %coin,
-                        freeze_dir,
-                        buy_sz,
-                        sell_sz,
-                        "directional freeze: opposite side BANNED"
-                    );
-                }
 
                 // V12.1: COARSE mode sensitive skew — block side after N same-side fills
                 {
@@ -751,9 +767,19 @@ pub async fn run<A: MarketAdapter>(
                         if buys == 0 && sells == 0 {
                             tracing::debug!(coin=%coin, "COARSE: both sides clear");
                         }
-                    // V12.2: Asymmetric sizing for coarse-tick markets
-                    // When position accumulates heavily on one side, shrink the adverse side and
-                    // boost the favorable (unwind) side. Prevents free-option writing.
+                    // V12.2: COARSE_TICK_HARVEST Asymmetric Sizing — position defense for 1-tick markets.
+                    //
+                    // In 1-tick markets, price shading CANNOT work (spread already at minimum).
+                    // Instead SIZE asymmetry steers inventory toward zero:
+                    //
+                    //   pos_ratio < 5%      → Bilateral full-size (buy = sell, both sides)
+                    //   pos_ratio 5%-30%    → Asymmetric: unwind side BOOSTED 1.2x, adverse CAPPED at 25%
+                    //   pos_ratio 30%-60%   → Hard kill: adverse side ZERO, only unwind side
+                    //   pos_ratio >= 60%    → Hard limit: CANCEL ALL + FREEZE (manual intervention)
+                    //
+                    // Threshold rule: coarse_pos_ratio_hard_kill MUST exceed
+                    // (base_order_notional / hard_limit) to avoid single-fill lockout.
+                    // Currently: 0.30 > 35.0 / 149.84 = 0.233 ✓
                     {
                         let gate_v122 = coin_state.get_or_init(coin).gate_mode.clone();
                         if gate_v122 == "COARSE" {
@@ -764,13 +790,25 @@ pub async fn run<A: MarketAdapter>(
                                 let boost = cfg.coarse_unwind_size_boost;
                                 if favor_buy {
                                     buy_sz *= boost;
-                                    sell_sz = sell_sz.min(buy_sz * 0.25);
+                                    if buy_sz > 0.0 {
+                                        sell_sz = sell_sz.min(buy_sz * 0.25);
+                                    } else {
+                                        // V12.5.1: Directional freeze killed unwind side —
+                                        // fallback cap at 10% to prevent zero-deadlock
+                                        sell_sz *= 0.10;
+                                    }
                                     tracing::info!(coin=%coin, pr_pct=%format!("{:.1}", pr_abs*100.0),
                                         buy_sz=%format!("{:.4}", buy_sz), sell_sz=%format!("{:.4}", sell_sz),
                                         "COARSE asymmetric: SHORT pos -> boost BUY {:.1}x, cap SELL", boost);
                                 } else if favor_sell {
                                     sell_sz *= boost;
-                                    buy_sz = buy_sz.min(sell_sz * 0.25);
+                                    if sell_sz > 0.0 {
+                                        buy_sz = buy_sz.min(sell_sz * 0.25);
+                                    } else {
+                                        // V12.5.1: Directional freeze killed unwind side —
+                                        // fallback cap at 10% to prevent zero-deadlock
+                                        buy_sz *= 0.10;
+                                    }
                                     tracing::info!(coin=%coin, pr_pct=%format!("{:.1}", pr_abs*100.0),
                                         buy_sz=%format!("{:.4}", buy_sz), sell_sz=%format!("{:.4}", sell_sz),
                                         "COARSE asymmetric: LONG pos -> boost SELL {:.1}x, cap BUY", boost);
@@ -810,18 +848,21 @@ pub async fn run<A: MarketAdapter>(
                     tracing::debug!(coin=%coin, cooldown_left, "post-UNWIND cooldown active");
                 }
 
+                // V12.5.1: Always record gate/size_mult + buy_sz/sell_sz — previously
+                // only recorded inside order placement blocks, causing zeros when frozen.
+                {
+                    let cs_m = coin_state.get_or_init(coin);
+                    metrics.size_multiplier = cs_m.size_multiplier;
+                    metrics.gate_mode = cs_m.gate_mode.clone();
+                }
+                metrics.buy_sz = buy_sz;
+                metrics.sell_sz = sell_sz;
+
                 // P0: Collect new order OIDs in a separate vec to detect double-fill
                 let mut new_oids: Vec<u64> = Vec::new();
 
                 // Place BUY order
                 if !freeze_buy && buy_sz > 0.0 {
-                    let cs = coin_state.get_or_init(coin);
-                metrics.size_multiplier = cs.size_multiplier;
-                metrics.gate_mode = cs.gate_mode.clone();
-                let cs_sz = coin_state.get_or_init(coin);
-                metrics.size_multiplier = cs_sz.size_multiplier;
-                metrics.gate_mode = cs_sz.gate_mode.clone();
-                metrics.buy_sz = buy_sz;
                     if is_unwind {
                         // Unwind BUY: GTC non-Post-Only at best_ask to cross spread.
                         // place_limit_order uses Alo (rejected when crossing) → use GTC instead.
@@ -911,7 +952,6 @@ pub async fn run<A: MarketAdapter>(
 
                 // Place SELL order
                 if !freeze_sell && sell_sz > 0.0 {
-                    metrics.sell_sz = sell_sz;
                     if is_unwind && sell_sz > 0.0 {
                         // Unwind SELL: GTC non-Post-Only at best_bid to cross spread
                         let aggressive_px = book.best_bid().unwrap_or(defensive_ask_px - coin_tick);
@@ -1193,6 +1233,18 @@ async fn bootstrap_recovery<A: MarketAdapter>(
     coin_state: &mut CoinStateMachine,
 ) -> Result<()> {
     let account = adapter.fetch_state().await?;
+
+    // V12.4.1-hotfix: Cancel ALL open orders from previous engine sessions at cold start.
+    // Without this sweep, old orders accumulate into zombie stacks because
+    // active_orders starts empty and can never track pre-existing OIDs.
+    for coin in &cfg.coins {
+        if let Err(e) = adapter.cancel_all_for_coin(coin).await {
+            tracing::warn!(coin = %coin, ?e, "bootstrap: cancel_all sweep failed");
+        }
+        rate_limit_delay().await;
+    }
+    tracing::info!("bootstrap: startup cancel sweep complete");
+
     *bus.account.write() = account.clone();
 
     if account.positions.is_empty() {
@@ -1224,8 +1276,12 @@ async fn bootstrap_recovery<A: MarketAdapter>(
             continue;
         }
 
-        let hard_limit = if account.withdrawable > 0.0 {
-            account.withdrawable * cfg.hard_limit_ratio
+        // V12.7: withdrawable safety floor — when HL reports negative withdrawable
+        // (leverage/liability state), fall back to equity-based estimate instead of
+        // collapsing hard_limit to $1.0 which would lock the engine permanently.
+        let effective_wd = account.withdrawable.max(account.equity * cfg.hard_limit_ratio * 0.5);
+        let hard_limit = if effective_wd > 0.0 {
+            effective_wd * cfg.hard_limit_ratio
         } else {
             (account.equity * cfg.hard_limit_ratio).max(1.0)
         };
