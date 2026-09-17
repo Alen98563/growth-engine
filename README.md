@@ -204,39 +204,40 @@ A deliberately small, auditable surface: **three layers, one state machine, one 
 
 ## 5. Risk Engine — Design vs Implementation
 
-The risk engine is the project's most reusable asset. The internal design tally grew to **17 layers by V12.4** (per `docs/CHANGELOG.md`); an independent source inspection of `src/` found **9 clearly implemented**, 2 partial, 2 design-only among the substantive mechanisms listed below. The `Status` column records the verified state — this is deliberately more conservative than the changelog.
+The risk engine is the project's most reusable asset. The internal design tally grew to **17 layers by V12.4** (per `docs/CHANGELOG.md`); an independent source inspection of `src/` verified the substantive mechanisms below. The `Status` column records what the code actually does — deliberately more conservative than the changelog.
 
-| # | Layer | Trigger / Rule | Status |
-|--:|:--|:--|:--|
-| 0 | **Cubic3 price skew** | `skew ∝ position_ratio³`, tick-discretized | ✅ `risk.rs::cubic_skew` |
-| 1 | **Quadratic2 asymmetric qty** | `qty ∝ 1 − ratio²`, min-lot guarded | ✅ `risk.rs::asymmetric_qty_guarded` |
-| 2 | **Adaptive IOC shedding** | ≥ 90% of hard limit | ✅ `engine.rs` shed path |
-| 3 | **Rate-limit jitter** | per-cycle request budget | ✅ 600 ms intra-cycle spacing |
-| 4 | **Passive unwind watermark** | ≥ 40% of hard limit, hysteresis band | ✅ `state.rs` PASSIVE_UNWIND |
-| 5 | **Portfolio hard limit** | ≥ 40% of equity notional | ✅ `portfolio_reduce` gate (V12.4) |
-| 6 | **Reserve floor** | withdrawable < `min_reserve` | ✅ `risk.rs::has_reserve` (simplified kill switch) |
-| 7 | **Circuit breaker** | N API failures → trip + halt | ⚠️ referenced in `executor.rs`, recovery path partial |
-| 8 | **Dynamic position cap** | `min(base, cap / vol_multiplier)` | ⚠️ config present; volatility input not wired |
-| 9 | **Liquidation defense** | direction-aware distance < 8% | ❌ design only |
-| 10 | **Dust filter** | position < $20 | ❌ design only |
-| 11 | **Anti-ping-pong / directional freeze** | post-unwind timer + flip hysteresis | ✅ `state.rs` freeze + flip brake |
-| 12 | **GTC last-resort** | zero-fill IOC rounds → GTC escape | ✅ `engine.rs` + `executor.rs` |
+| # | Mechanism | Trigger / Rule | Source (verified) | Status |
+|--:|:--|:--|:--|:--|
+| 0 | **Cubic3 price skew** (dead-zone) | `skew = max_skew × ((ratio−dz)/(1−dz))³`, tick-discretized | `risk.rs::cubic_skew` | ✅ |
+| 1 | **Quadratic2 asymmetric qty** | `qty ∝ 1 − ratio²`, min-lot guarded | `risk.rs::asymmetric_qty_guarded` | ✅ |
+| 2 | **Adaptive IOC shedding** | ≥ `shed_trigger` (90%) → IOC loop, re-entry at 70% | `risk.rs::shed_check` → `engine.rs` `State::Shedding` | ✅ |
+| 3 | **Cycle jitter / rate-limit spacing** | 600 ms between API calls; ±20% cycle jitter | `engine.rs::rate_limit_delay`, `cfg.cycle_jitter` | ✅ |
+| 4 | **Passive unwind watermark** | watermark + hysteresis → PASSIVE_UNWIND | `engine.rs` unwind path, `state.rs` | ✅ |
+| 5 | **Portfolio hard limit** | aggregate over limit → block new risk (reduce-only) | `engine.rs` `portfolio_over_limit` (V12.4) | ✅ |
+| 6 | **Reserve floor** | `withdrawable < min_reserve` → wait/cooldown | `risk.rs::has_reserve` → `engine.rs` | ✅ (narrow) |
+| 7 | **Circuit breaker** | N API failures → trip + halt | — | ❌ *comment-only* (`executor.rs` doc says "with circuit breaker"; struct has no breaker field) |
+| 8 | **Dynamic position cap** | `min(base, cap / vol_multiplier)` | `volatility` field exists but is written as `0.0` | ⚠️ not wired |
+| 9 | **Liquidation defense** | direction-aware distance < 8% | — | ❌ *design only* (`Liquidation Defense` appears only in `CHANGELOG.md`) |
+| 10 | **Dust filter** | position < $20 | — | ❌ *design only* |
+| 11 | **Anti-ping-pong / directional freeze** | flip hysteresis + freeze timer | `state.rs` `freeze_remaining`, `last_flip_cycle` | ✅ |
+| 12 | **GTC last-resort** | zero-fill IOC rounds → GTC escape | `engine.rs` + `executor.rs` | ✅ |
 
-<!-- legend: ✅ implemented · ⚠️ partial · ❌ design only -->
+**Verified tally: 9 implemented, 1 partial, 3 design/comment-only.** "Layer 6 / rescue floor" counts as implemented but is narrower than the changelog's "kill switch" (it does not perform a forced liquidation + halt).
 
-### 5.1 State machine (per coin)
+### 5.1 Gate priority chain — exactly 6 tiers
 
-```
-IDLE → COLD_START → NORMAL ─┬─► PASSIVE_UNWIND ──► NORMAL
-                            ├─► EMERGENCY_IOC ──► COOLDOWN ──► NORMAL
-                            ├─► WAITING
-                            └─► GATE_BLOCKED
-                                     (any) ──► KILL_SWITCH
-```
+The gate is a single `if / else if` chain in `engine.rs` (≈ line 325). It resolves to one of six mutually exclusive modes, checked in this order:
 
-Gate priority chain (V12.3): **CROSSED → THIN_SPREAD → COARSE → TSUNAMI → SNIPER → BLOCKED**
+| Order | Mode | Condition | Size mult |
+|--:|:--|:--|--:|
+| 1 | **CROSSED** | `best_ask ≤ best_bid` (REST-verified crossed book) | 0.0 (blocked) |
+| 2 | **THIN_SPREAD** | `gross_bps < maker_fee_bps + min_margin_bps` (V12.3) | 0.0 (blocked) |
+| 3 | **COARSE** | `gross_bps ≥ 15.0` **and** spread is exactly 1 tick | `0.30` |
+| 4 | **TSUNAMI** | `ticks ≥ tsunami_ticks` (1) | 1.0 |
+| 5 | **SNIPER** | `ticks ≥ gate_block_ticks` (0) | 0.4 |
+| 6 | **BLOCKED** | otherwise | 0.0 (blocked) |
 
-The **THIN_SPREAD** gate is the economic conscience of the system: it blocks any coin whose gross spread cannot cover `maker_fee + min_margin`, so the engine *physically cannot* provide liquidity at a negative net spread.
+So the chain has **6 tiers** (not 13, and not 9 — those counts belong to the *risk* mechanisms). The **THIN_SPREAD** tier is the economic conscience: it makes the engine *physically unable* to quote at a negative net spread.
 
 ---
 
@@ -249,19 +250,35 @@ The **THIN_SPREAD** gate is the economic conscience of the system: it blocks any
 - **22 commits, 6 release tags** (`v4-scanner` → `v12.2-hotfix-freeze`), each mapped to a concrete production incident.
 - **Zero cloud dependency** — single binary + Python signing subprocess.
 
-### 6.1 Latency profile — stated honestly
+### 6.1 Latency profile — measured, not estimated
 
-This is a **3–5 second cycle market maker, not a latency-sensitive/HFT system**, and no latency distribution has been measured. What the code actually says:
+This is a **3–5 second cycle market maker**, not a latency-sensitive/HFT system. Every figure below is either a code constant or a **fresh benchmark run on the deployment host**; no number is copied from prose.
+
+**Timing constants (from source):**
 
 | Path | Figure | Source |
 |:--|:--|:--|
-| Engine cycle | **3–5 s** | `engine.rs` loop design |
-| Intra-cycle API spacing | **600 ms** (≤2 req/s) | `engine.rs` rate-limit guard |
-| Python EIP-712 signing subprocess | **~75 ms** per call | design estimate, not measured |
+| Engine cycle | `cycle_sleep_min..max` + jitter | `engine.rs` |
+| Intra-cycle API spacing | **600 ms** (≤2 req/s) | `engine.rs::rate_limit_delay` |
+| Cycle jitter | ±20% | `cfg.cycle_jitter` |
 | OBI computation tick | 50 ms | `sniper/mod.rs` |
 | Toxic-flow detection tick | 500 ms | `sniper/mod.rs` |
 
-**No p50/p99, no RTT distribution, no µs-level measurement exists in this repository.** The WS data path is event-driven, but the order path is dominated by the multi-second cycle. Any latency number beyond the above would be invented.
+**The signing path — benchmarked (`bench_sign.py`, Ubuntu / Python 3.10):**
+
+The engine pays for signing by **spawning a fresh `python3` process per call**, so the real cost is dominated by interpreter + SDK import, not by the ECDSA math:
+
+| Component | p50 | Notes |
+|:--|--:|:--|
+| bare interpreter startup | **86 ms** | floor |
+| `import eth_account` | **1,348 ms** | ⚠️ the dominant cost |
+| `import hyperliquid` (alone) | 87 ms | cheap |
+| **full subprocess spawn + imports** | **~1,206 ms** | what the engine actually pays per call |
+| the actual EIP-712 signature | **13.5 ms** | p90 15.5 ms — negligible |
+
+> ⚠️ **Correction to the project's own documentation.** `docs/GE_SYSTEM_FRAMEWORK.md` states "Python signing latency ~75 ms". That figure is **wrong** — it is the bare-interpreter cost only, and excludes the `eth_account` import which adds ~1.3 s. Because the engine keeps the 3–5 s cycle, the true ~1.2 s signing cost is absorbed (and harmless), but the documented 75 ms figure should not be quoted.
+
+No p50/p99 wire-latency or RTT distribution was ever measured; the WS data path is event-driven but the order path is dominated by the multi-second cycle. Benchmarks live in `bench_sign.py` / `bench_iso.py` and are reproducible with `python3 bench_sign.py`.
 
 ### 6.2 Measured microstructure (real, not illustrative)
 
