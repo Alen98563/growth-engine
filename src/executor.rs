@@ -54,7 +54,8 @@ impl Executor {
             let prev = self.last_nonce.load(Ordering::SeqCst);
             let next = now.max(prev.saturating_add(1));
             match self.last_nonce.compare_exchange_weak(
-                prev, next,
+                prev,
+                next,
                 Ordering::SeqCst,
                 Ordering::SeqCst,
             ) {
@@ -81,7 +82,6 @@ impl Executor {
             .await?;
         let data: serde_json::Value = resp.json().await?;
 
-
         let margin = &data["marginSummary"];
         let equity = margin["accountValue"]
             .as_str()
@@ -97,18 +97,23 @@ impl Executor {
             .and_then(|s| s.parse::<f64>().ok())
             .unwrap_or(0.0);
 
-        let positions_raw = data["assetPositions"].as_array().cloned().unwrap_or_default();
+        let positions_raw = data["assetPositions"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
         let positions: Vec<Position> = positions_raw
             .iter()
             .filter_map(|p| {
                 let pos = p.get("position")?;
                 let coin = pos.get("coin")?.as_str()?.to_string();
                 let szi = pos.get("szi")?.as_str()?.parse::<f64>().ok()?;
-                let entry_px = pos.get("entryPx")
+                let entry_px = pos
+                    .get("entryPx")
                     .and_then(|v| v.as_str())
                     .and_then(|s| s.parse::<f64>().ok())
                     .unwrap_or(0.0);
-                let upnl = pos.get("unrealizedPnl")
+                let upnl = pos
+                    .get("unrealizedPnl")
                     .and_then(|v| v.as_str())
                     .and_then(|s| s.parse::<f64>().ok())
                     .unwrap_or(0.0);
@@ -143,7 +148,6 @@ impl Executor {
             .await?;
         let data: serde_json::Value = resp.json().await?;
 
-
         let mut book = L2Book::new(coin.to_string());
         crate::order_book::update_from_ws(&mut book, &data);
         Ok(book)
@@ -164,9 +168,9 @@ impl Executor {
         reduce_only: bool,
     ) -> Result<OrderOutcome> {
         let nonce = self.next_nonce();
-        let sig = self
-            .signer
-            .sign_l1_order(coin, is_buy, reduce_only, limit_px, sz, nonce, "Alo")?;
+        let sig =
+            self.signer
+                .sign_l1_order(coin, is_buy, reduce_only, limit_px, sz, nonce, "Alo")?;
 
         let px_wire = sig.px_str.as_deref().unwrap_or("0");
         let sz_wire = sig.sz_str.as_deref().unwrap_or("0");
@@ -196,7 +200,6 @@ impl Executor {
             .send()
             .await?;
         let data: serde_json::Value = resp.json().await?;
-
 
         let statuses = data["response"]["data"]["statuses"].as_array();
         let mut rejection_reason: Option<String> = None;
@@ -271,7 +274,6 @@ impl Executor {
             .await?;
         let data: serde_json::Value = resp.json().await?;
 
-
         let statuses = data["response"]["data"]["statuses"].as_array();
         if let Some(statuses) = statuses {
             for status in statuses {
@@ -302,9 +304,9 @@ impl Executor {
         reduce_only: bool,
     ) -> Result<OrderOutcome> {
         let nonce = self.next_nonce();
-        let sig = self
-            .signer
-            .sign_l1_order(coin, is_buy, reduce_only, limit_px, sz, nonce, "Gtc")?;
+        let sig =
+            self.signer
+                .sign_l1_order(coin, is_buy, reduce_only, limit_px, sz, nonce, "Gtc")?;
 
         let px_wire = sig.px_str.as_deref().unwrap_or("0");
         let sz_wire = sig.sz_str.as_deref().unwrap_or("0");
@@ -335,9 +337,8 @@ impl Executor {
             .await?;
         let data: serde_json::Value = resp.json().await?;
 
-
         let statuses = data["response"]["data"]["statuses"].as_array();
-                tracing::warn!(coin=%coin, is_buy, px=%limit_px, sz, "GTC RAW: {}", serde_json::to_string(&data).unwrap_or_default());
+        tracing::warn!(coin=%coin, is_buy, px=%limit_px, sz, "GTC RAW: {}", serde_json::to_string(&data).unwrap_or_default());
         tracing::warn!(coin=%coin, is_buy, px=%limit_px, sz, "GTC statuses: {:?}", statuses);
         let mut rejection_reason: Option<String> = None;
         if let Some(statuses) = statuses {
@@ -410,9 +411,9 @@ impl Executor {
     ) -> Result<OrderOutcome> {
         for retreat in 0..=max_retreat {
             let nonce = self.next_nonce();
-            let sig = self
-                .signer
-                .sign_l1_order(coin, is_buy, reduce_only, limit_px, sz, nonce, "Alo")?;
+            let sig =
+                self.signer
+                    .sign_l1_order(coin, is_buy, reduce_only, limit_px, sz, nonce, "Alo")?;
 
             let px_wire = sig.px_str.as_deref().unwrap_or("0");
             let sz_wire = sig.sz_str.as_deref().unwrap_or("0");
@@ -441,8 +442,7 @@ impl Executor {
                 .json(&body)
                 .send()
                 .await?;
-        let data: serde_json::Value = resp.json().await?;
-
+            let data: serde_json::Value = resp.json().await?;
 
             let statuses = data["response"]["data"]["statuses"].as_array();
             let mut would_match = false;
@@ -594,8 +594,16 @@ impl MarketAdapter for Executor {
         tick_size: f64,
     ) -> Result<OrderOutcome> {
         Executor::place_limit_order_with_tick_retreat(
-            self, coin, is_buy, sz, limit_px, reduce_only, max_retreat, tick_size,
-        ).await
+            self,
+            coin,
+            is_buy,
+            sz,
+            limit_px,
+            reduce_only,
+            max_retreat,
+            tick_size,
+        )
+        .await
     }
 
     async fn cancel_order(&mut self, coin: &str, oid: u64) -> Result<()> {
@@ -691,4 +699,3 @@ fn build_exchange_body(
         }
     })
 }
-

@@ -13,8 +13,8 @@ use crate::types::{Fill, MarketShockSignal, SignalBus};
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -71,8 +71,8 @@ async fn connect_and_subscribe(url: &str, cfg: &Config, bus: &SignalBus) -> Resu
     // ── P0: Rolling fill window for toxic burst detection ──
     // Tracks fill timestamps and direction in a cheap Vec.
     struct FillTick {
-        time: u64,    // ms since epoch
-        sign: f64,    // +1.0 for BUY, -1.0 for SELL
+        time: u64, // ms since epoch
+        sign: f64, // +1.0 for BUY, -1.0 for SELL
         oid: u64,
     }
     let mut fill_window: Vec<FillTick> = Vec::new();
@@ -93,8 +93,16 @@ async fn connect_and_subscribe(url: &str, cfg: &Config, bus: &SignalBus) -> Resu
                 // This is independent of the bus.fills buffer (which the engine drains
                 // per-cycle for logging).
                 if let Some((side, oid, fill_time)) = extract_fill_meta(&text) {
-                    let sign = if side.to_uppercase().contains("B") { 1.0 } else { -1.0 };
-                    fill_window.push(FillTick { time: fill_time, sign, oid });
+                    let sign = if side.to_uppercase().contains("B") {
+                        1.0
+                    } else {
+                        -1.0
+                    };
+                    fill_window.push(FillTick {
+                        time: fill_time,
+                        sign,
+                        oid,
+                    });
 
                     // Expire ticks outside the rolling window
                     let cutoff = now_ms.saturating_sub(SHOCK_WINDOW_SECS * 1000);
@@ -149,7 +157,11 @@ fn extract_fill_meta(text: &str) -> Option<(String, u64, u64)> {
 
     let fill_data = data.get("data")?;
     // Skip snapshot messages — only count streaming fills
-    if fill_data.get("isSnapshot").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if fill_data
+        .get("isSnapshot")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         return None;
     }
 
@@ -208,10 +220,24 @@ async fn process_message(text: &str, bus: &SignalBus) {
 fn parse_fill(data: &serde_json::Value) -> Option<Fill> {
     let coin = data.get("coin")?.as_str()?.to_string();
     let oid = data.get("oid").and_then(|v| v.as_u64()).unwrap_or(0);
-    let side = data.get("dir").and_then(|v| v.as_str()).unwrap_or("?").to_string();
-    let sz = data.get("sz").and_then(|v| v.as_str()).and_then(|s| s.parse::<f64>().ok())?;
-    let px = data.get("px").and_then(|v| v.as_str()).and_then(|s| s.parse::<f64>().ok())?;
-    let fee = data.get("fee").and_then(|v| v.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+    let side = data
+        .get("dir")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?")
+        .to_string();
+    let sz = data
+        .get("sz")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<f64>().ok())?;
+    let px = data
+        .get("px")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<f64>().ok())?;
+    let fee = data
+        .get("fee")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0);
     let time = data.get("time").and_then(|v| v.as_u64()).unwrap_or(0);
 
     Some(Fill {

@@ -62,12 +62,7 @@ impl RiskEngine {
     /// Main risk assessment: takes L2 book + account state → RiskOutput.
     ///
     /// This is the heart of the engine. Called every cycle (3-5s).
-    pub fn assess(
-        &self,
-        book: &L2Book,
-        account: &AccountState,
-        coin: &str,
-    ) -> Option<RiskOutput> {
+    pub fn assess(&self, book: &L2Book, account: &AccountState, coin: &str) -> Option<RiskOutput> {
         let best_bid = book.best_bid()?;
         let best_ask = book.best_ask()?;
         let mid = (best_bid + best_ask) / 2.0;
@@ -259,11 +254,7 @@ impl RiskEngine {
         }
 
         let shed_notional = position_size.abs() * mid * self.cfg.shed_fraction;
-        let side = if position_size > 0.0 {
-            "SELL"
-        } else {
-            "BUY"
-        };
+        let side = if position_size > 0.0 { "SELL" } else { "BUY" };
 
         (true, Some(side.to_string()), shed_notional)
     }
@@ -302,7 +293,8 @@ impl RiskEngine {
     /// Example: watermark=40%, hysteresis=20% → exit below 20%.
     /// This prevents state flickering when position oscillates near 40%.
     pub fn unwind_safe(&self, position_ratio: f64) -> bool {
-        let exit_threshold = (self.cfg.passive_unwind_watermark - self.cfg.unwind_hysteresis).max(0.0);
+        let exit_threshold =
+            (self.cfg.passive_unwind_watermark - self.cfg.unwind_hysteresis).max(0.0);
         position_ratio < exit_threshold
     }
 

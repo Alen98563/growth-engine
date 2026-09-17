@@ -128,12 +128,7 @@ impl Signer {
     }
 
     /// Sign an L1 cancel action (single order by OID).
-    pub fn sign_l1_cancel(
-        &self,
-        coin: &str,
-        oid: u64,
-        nonce: u64,
-    ) -> Result<SignedAction> {
+    pub fn sign_l1_cancel(&self, coin: &str, oid: u64, nonce: u64) -> Result<SignedAction> {
         let output = Command::new("python3")
             .arg(&self.script_path)
             .arg("cancel")
@@ -159,11 +154,7 @@ impl Signer {
     }
 
     /// Sign a cancel-by-cloid action (cancel all orders for a coin).
-    pub fn sign_l1_cancel_by_cloid(
-        &self,
-        coin: &str,
-        nonce: u64,
-    ) -> Result<SignedAction> {
+    pub fn sign_l1_cancel_by_cloid(&self, coin: &str, nonce: u64) -> Result<SignedAction> {
         let output = Command::new("python3")
             .arg(&self.script_path)
             .arg("cancel-by-cloid")
@@ -206,8 +197,8 @@ fn parse_signature_output(stdout: &[u8], action_type: &str) -> Result<SignedActi
         asset_idx: Option<u32>,
     }
 
-    let out: SigOut = serde_json::from_slice(stdout)
-        .context("failed to parse hl_sign.py output")?;
+    let out: SigOut =
+        serde_json::from_slice(stdout).context("failed to parse hl_sign.py output")?;
 
     Ok(SignedAction {
         r: out.r,
@@ -288,4 +279,4 @@ pub mod recipes {
     //! ## Phantom agent (envelope)
     //! ```python
     //! phantom_agent = {"source": "a", "connectionId": hash}
-    }
+}

@@ -55,7 +55,10 @@ async fn main() -> Result<()> {
         .json()
         .init();
 
-    tracing::info!("growth-engine v{} starting (P0: place-before-cancel + toxic defense)", env!("CARGO_PKG_VERSION"));
+    tracing::info!(
+        "growth-engine v{} starting (P0: place-before-cancel + toxic defense)",
+        env!("CARGO_PKG_VERSION")
+    );
 
     // Load config
     let cfg = config::Config::from_env()?;

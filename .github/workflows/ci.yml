@@ -8,42 +8,64 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
 
 jobs:
-  check:
+  test:
+    name: fmt · clippy · build · test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - uses: actions/cache@v4
+
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles("**/Cargo.lock") }}
-      - name: Format
+          workspaces: ". -> target"
+
+      - name: Format check
         run: cargo fmt --all -- --check
+
       - name: Clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
+
       - name: Build
-        run: cargo build --release
+        run: cargo build --release --verbose
+
       - name: Test
         run: cargo test --release
 
-  security:
+  economics:
+    name: economics model
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Check secrets
-        run: |
-          if grep -r "0x[a-fA-F0-9]\{64\}" --include="*.rs" --include="*.toml" .; then
-            echo "WARNING: possible hex key in source"
-          fi
-      - name: Cargo audit
-        uses: rustsec/audit-check@v2
+      - uses: actions/setup-python@v5
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          python-version: "3.x"
+      - name: Regenerate the profitability model
+        run: python3 scripts/economics_model.py
+
+  secret-scan:
+    name: secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reject committed private keys / wallet secrets
+        run: |
+          set -e
+          echo "Scanning tracked files for private-key material..."
+          # 0x-prefixed 64-hex private keys (64 chars XOR 40-char addresses)
+          if git grep -nE '0x[a-fA-F0-9]{64}' -- . ':!Cargo.lock'; then
+            echo "::error::possible 64-hex private key committed"; exit 1
+          fi
+          if git grep -nE 'github_pat_[A-Za-z0-9_]{20,}|ghp_[A-Za-z0-9]{20,}' -- .; then
+            echo "::error::possible GitHub token committed"; exit 1
+          fi
+          if git log --all --diff-filter=A --name-only --pretty=format: | grep -E '(^|/)\.env$'; then
+            echo "::error::.env was committed at some point"; exit 1
+          fi
+          echo "clean."

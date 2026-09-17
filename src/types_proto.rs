@@ -32,7 +32,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum InstType {
     Spot = 1,
-    Swap = 2,       // Perpetual
+    Swap = 2, // Perpetual
     Futures = 3,
     Option_ = 4,
     Margin = 5,
@@ -78,13 +78,21 @@ pub enum OrderSide {
 impl OrderSide {
     /// Convert boolean buy/sell flag to Side enum.
     pub fn from_bool(is_buy: bool) -> Self {
-        if is_buy { Self::Buy } else { Self::Sell }
+        if is_buy {
+            Self::Buy
+        } else {
+            Self::Sell
+        }
     }
 
     /// Returns true if this is a buy side order.
-    pub fn is_buy(&self) -> bool { matches!(self, Self::Buy) }
+    pub fn is_buy(&self) -> bool {
+        matches!(self, Self::Buy)
+    }
     /// Returns true if this is a sell side order.
-    pub fn is_sell(&self) -> bool { matches!(self, Self::Sell) }
+    pub fn is_sell(&self) -> bool {
+        matches!(self, Self::Sell)
+    }
 }
 
 /// Order type — mirrors proto `OrderType` enum.
@@ -94,9 +102,9 @@ pub enum OrderType {
     Limit = 2,
     PostOnly = 3,
     #[serde(rename = "FOK")]
-    Fok = 4,         // Fill-or-Kill
+    Fok = 4, // Fill-or-Kill
     #[serde(rename = "IOC")]
-    Ioc = 5,         // Immediate-or-Cancel
+    Ioc = 5, // Immediate-or-Cancel
 }
 
 impl OrderType {
@@ -179,8 +187,12 @@ impl StateMachine for OrderState {
     fn is_terminal(&self) -> bool {
         matches!(
             self,
-            Self::Filled | Self::PartialCanceled | Self::Canceled
-                | Self::Rejected | Self::Expired | Self::Unknown
+            Self::Filled
+                | Self::PartialCanceled
+                | Self::Canceled
+                | Self::Rejected
+                | Self::Expired
+                | Self::Unknown
         )
     }
 
@@ -190,9 +202,18 @@ impl StateMachine for OrderState {
             (self, next),
             (Unspecified, New)
                 | (New, Posted | Rejected)
-                | (Posted, PartialFilled | Filled | Canceled | Rejected | Expired | PendingCancel)
-                | (PartialFilled, PartialFilled | Filled | PartialCanceled | Canceled | PendingCancel)
-                | (PendingCancel, PartialCanceled | Canceled | PartialFilled | Filled)
+                | (
+                    Posted,
+                    PartialFilled | Filled | Canceled | Rejected | Expired | PendingCancel
+                )
+                | (
+                    PartialFilled,
+                    PartialFilled | Filled | PartialCanceled | Canceled | PendingCancel
+                )
+                | (
+                    PendingCancel,
+                    PartialCanceled | Canceled | PartialFilled | Filled
+                )
         )
     }
 
@@ -255,9 +276,7 @@ impl StateMachine for StrategyGeneState {
         use StrategyGeneState::*;
         matches!(
             (self, next),
-            (Sandbox, Probation)
-                | (Probation, Core | Sandbox)
-                | (Core, Probation | Retired)
+            (Sandbox, Probation) | (Probation, Core | Sandbox) | (Core, Probation | Retired)
         )
     }
 
@@ -341,13 +360,18 @@ impl UnifiedOrder {
             is_buy: self.side.is_buy(),
             sz: self.sz_f64(),
             limit_px: self.px_f64(),
-            reduce_only: self.meta.get("reduce_only").map(|v| v == "true").unwrap_or(false),
+            reduce_only: self
+                .meta
+                .get("reduce_only")
+                .map(|v| v == "true")
+                .unwrap_or(false),
             tif: self.order_type.tif_str().to_string(),
             cloid: Some(self.cl_ord_id.clone()),
             order_type: match self.order_type {
                 OrderType::Limit | OrderType::PostOnly => "Limit",
                 _ => "Limit", // HL only supports Limit
-            }.to_string(),
+            }
+            .to_string(),
         }
     }
 }

@@ -1,8 +1,8 @@
 //! Configuration — Growth Mode specific parameters.
 
 use anyhow::Result;
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::time::Duration;
 
 /// Top-level configuration, loaded from .env or command-line.
@@ -177,7 +177,7 @@ impl Config {
             cfg.ws_url = v;
         }
         cfg.address =
-            std::env::var("HL_ADDRESS").unwrap_or_else(|_| "0xEC1FbcaD".into());
+            std::env::var("HL_ADDRESS").map_err(|_| anyhow::anyhow!("HL_ADDRESS must be set"))?;
         cfg.private_key = std::env::var("HL_PRIVATE_KEY")
             .map_err(|_| anyhow::anyhow!("HL_PRIVATE_KEY must be set"))?;
 

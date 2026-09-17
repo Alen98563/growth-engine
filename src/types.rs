@@ -279,7 +279,11 @@ impl SignalBus {
 
     /// Snapshot of current L2 for a coin.
     pub fn book(&self, coin: &str) -> L2Book {
-        self.books.read().get(coin).cloned().unwrap_or_else(|| L2Book::new(coin.to_string()))
+        self.books
+            .read()
+            .get(coin)
+            .cloned()
+            .unwrap_or_else(|| L2Book::new(coin.to_string()))
     }
 
     /// Snapshot of current account state.

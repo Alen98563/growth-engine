@@ -39,7 +39,7 @@ const SNIPER_STATE_TTL_S: u64 = 120;
 const FILL_BURST_WINDOW_MS: u64 = 500;
 const FILL_BURST_MIN_COUNT: usize = 5;
 const FILL_BURST_SKEW: f64 = 0.8;
-const SPOOF_DEPTH_DROP: f64 = 0.5;    // 50% depth vanish in SPOOF_WINDOW_MS
+const SPOOF_DEPTH_DROP: f64 = 0.5; // 50% depth vanish in SPOOF_WINDOW_MS
 const SPOOF_WINDOW_MS: u64 = 100;
 const QUOTE_STUFFING_RATE: usize = 50; // >50 L2 updates/sec for >1s
 const QUOTE_STUFFING_DURATION_S: u64 = 1;
@@ -61,24 +61,24 @@ pub enum ToxicEventKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum EvacuationLevel {
-    Monitor   = 0,
-    Alert     = 1,
-    Reduce    = 2,
-    Hedge     = 3,
-    FullEvac  = 4,
-    Panic     = 5,
+    Monitor = 0,
+    Alert = 1,
+    Reduce = 2,
+    Hedge = 3,
+    FullEvac = 4,
+    Panic = 5,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToxicFlowEvent {
     pub kind: ToxicEventKind,
     pub coin: String,
-    pub attack_side: String,       // "BUY" | "SELL"
+    pub attack_side: String, // "BUY" | "SELL"
     pub severity: u8,
     pub action: EvacuationLevel,
     pub whale_state: String,
     pub whale_score: f64,
-    pub direction_bias: Option<String>,  // parsed from EXECUTE_STANDARD_LONG → "LONG"
+    pub direction_bias: Option<String>, // parsed from EXECUTE_STANDARD_LONG → "LONG"
     pub ts_ms: u64,
 }
 
@@ -121,7 +121,7 @@ pub struct SniperState {
     pub active: bool,
     pub coin: Option<String>,
     pub direction: Option<String>,
-    pub phase: String,          // Idle|Probing|Sniping|Retreating
+    pub phase: String, // Idle|Probing|Sniping|Retreating
     pub severity: u8,
     pub cooldown_until_ms: u64,
     pub updated_at: u64,
@@ -163,30 +163,48 @@ fn load_whale_state() -> HashMap<String, WhaleSnapshot> {
         .as_millis() as u64;
 
     for (coin, obj) in coins {
-        let state = obj.get("state").and_then(|v| v.as_str()).unwrap_or("随机游走");
-        let score = obj.get("whale_score").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let decision = obj.get("decision").and_then(|v| v.as_str()).unwrap_or("HOLD");
+        let state = obj
+            .get("state")
+            .and_then(|v| v.as_str())
+            .unwrap_or("随机游走");
+        let score = obj
+            .get("whale_score")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let decision = obj
+            .get("decision")
+            .and_then(|v| v.as_str())
+            .unwrap_or("HOLD");
         let direction_bias = parse_direction(decision);
         let z_p = obj.get("z_p").and_then(|v| v.as_f64()).unwrap_or(0.0);
         let z_oi = obj.get("z_oi").and_then(|v| v.as_f64()).unwrap_or(0.0);
         let z_cvd = obj.get("z_cvd").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let active_layers = obj.get("active_layers").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-        let consecutive_bars = obj.get("consecutive_bars").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let active_layers = obj
+            .get("active_layers")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+        let consecutive_bars = obj
+            .get("consecutive_bars")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
         let price = obj.get("price").and_then(|v| v.as_f64()).unwrap_or(0.0);
 
-        out.insert(coin.clone(), WhaleSnapshot {
-            state: state.to_string(),
-            score,
-            decision: decision.to_string(),
-            direction_bias,
-            z_p,
-            z_oi,
-            z_cvd,
-            active_layers,
-            consecutive_bars,
-            price,
-            fetched_at: now,
-        });
+        out.insert(
+            coin.clone(),
+            WhaleSnapshot {
+                state: state.to_string(),
+                score,
+                decision: decision.to_string(),
+                direction_bias,
+                z_p,
+                z_oi,
+                z_cvd,
+                active_layers,
+                consecutive_bars,
+                price,
+                fetched_at: now,
+            },
+        );
     }
     out
 }
@@ -328,7 +346,11 @@ impl ToxicFlowDetector {
         let skew = buys as f64 / recent.len() as f64;
 
         if skew > FILL_BURST_SKEW || skew < (1.0 - FILL_BURST_SKEW) {
-            let attack_side = if skew > FILL_BURST_SKEW { "BUY" } else { "SELL" };
+            let attack_side = if skew > FILL_BURST_SKEW {
+                "BUY"
+            } else {
+                "SELL"
+            };
             let severity = calculate_severity(60, whale);
             return Some(ToxicFlowEvent {
                 kind: ToxicEventKind::FillBurst,
@@ -507,12 +529,12 @@ fn calculate_severity(base: u8, whale: &WhaleSnapshot) -> u8 {
 
 fn severity_to_evac_level(severity: u8) -> EvacuationLevel {
     match severity {
-        0..=30  => EvacuationLevel::Monitor,
+        0..=30 => EvacuationLevel::Monitor,
         31..=50 => EvacuationLevel::Alert,
         51..=65 => EvacuationLevel::Reduce,
         66..=80 => EvacuationLevel::Hedge,
         81..=90 => EvacuationLevel::FullEvac,
-        _       => EvacuationLevel::Panic,
+        _ => EvacuationLevel::Panic,
     }
 }
 
@@ -536,18 +558,38 @@ impl OBIStream {
             return 0.0;
         }
 
-        let bid_sum: f64 = book.bids.iter()
+        let bid_sum: f64 = book
+            .bids
+            .iter()
             .take(self.depth)
             .enumerate()
-            .map(|(i, l)| if self.weighted { l.sz / (i + 1) as f64 } else { l.sz })
+            .map(|(i, l)| {
+                if self.weighted {
+                    l.sz / (i + 1) as f64
+                } else {
+                    l.sz
+                }
+            })
             .sum();
-        let ask_sum: f64 = book.asks.iter()
+        let ask_sum: f64 = book
+            .asks
+            .iter()
             .take(self.depth)
             .enumerate()
-            .map(|(i, l)| if self.weighted { l.sz / (i + 1) as f64 } else { l.sz })
+            .map(|(i, l)| {
+                if self.weighted {
+                    l.sz / (i + 1) as f64
+                } else {
+                    l.sz
+                }
+            })
             .sum();
         let total = bid_sum + ask_sum;
-        if total == 0.0 { 0.0 } else { (bid_sum - ask_sum) / total }
+        if total == 0.0 {
+            0.0
+        } else {
+            (bid_sum - ask_sum) / total
+        }
     }
 
     /// Fast L2 snapshot extraction for detector feed
@@ -610,7 +652,11 @@ impl FrontrunController {
 
     /// Called each OBI tick (50ms). Returns true if frontrun should activate.
     pub fn tick_obi(&mut self, coin: &str, obi: f64, now_ms: u64) -> bool {
-        self.obi_history.push_back(ObiPoint { ts_ms: now_ms, obi, coin: coin.to_string() });
+        self.obi_history.push_back(ObiPoint {
+            ts_ms: now_ms,
+            obi,
+            coin: coin.to_string(),
+        });
         while self.obi_history.len() > 64 {
             self.obi_history.pop_front();
         }
@@ -626,12 +672,7 @@ impl FrontrunController {
 
         // Delta check: is OBI accelerating?
         if self.obi_history.len() >= 3 {
-            let recent: Vec<&ObiPoint> = self
-                .obi_history
-                .iter()
-                .rev()
-                .take(3)
-                .collect();
+            let recent: Vec<&ObiPoint> = self.obi_history.iter().rev().take(3).collect();
             let delta = recent[0].obi - recent[2].obi;
             if delta.abs() < OBI_DELTA_THRESHOLD {
                 return false;
@@ -680,11 +721,7 @@ impl MicroSniper {
     }
 
     /// Receive toxic flow event → decide whether to probe
-    pub fn on_toxic_flow(
-        &mut self,
-        event: &ToxicFlowEvent,
-        now_ms: u64,
-    ) -> Option<SniperAction> {
+    pub fn on_toxic_flow(&mut self, event: &ToxicFlowEvent, now_ms: u64) -> Option<SniperAction> {
         if self.phase != ProbePhase::Idle && self.phase != ProbePhase::Retreating {
             return None;
         }
@@ -696,9 +733,9 @@ impl MicroSniper {
         }
 
         let direction = match event.attack_side.as_str() {
-            "SELL" => "BUY",  // snipe opposite direction of attack
-            "BUY"  => "SELL",
-            _      => return None,
+            "SELL" => "BUY", // snipe opposite direction of attack
+            "BUY" => "SELL",
+            _ => return None,
         };
 
         self.phase = ProbePhase::Probing;
@@ -772,18 +809,30 @@ pub struct EvacuationPipeline {
 
 impl EvacuationPipeline {
     pub fn new() -> Self {
-        Self { states: HashMap::new() }
+        Self {
+            states: HashMap::new(),
+        }
     }
 
     /// Process a toxic flow event → escalate or update evacuation level.
     /// J directive: max severity wins (concurrent signals don't downgrade).
     pub fn ingest(&mut self, event: &ToxicFlowEvent) -> EvacuationResponse {
-        let current = self.states.get(&event.coin).copied().unwrap_or(EvacuationLevel::Monitor);
+        let current = self
+            .states
+            .get(&event.coin)
+            .copied()
+            .unwrap_or(EvacuationLevel::Monitor);
         let new_level = std::cmp::max(current, event.action);
         self.states.insert(event.coin.clone(), new_level);
 
-        let needs_cancel_all = matches!(new_level, EvacuationLevel::FullEvac | EvacuationLevel::Panic);
-        let needs_hedge = matches!(new_level, EvacuationLevel::Hedge | EvacuationLevel::FullEvac);
+        let needs_cancel_all = matches!(
+            new_level,
+            EvacuationLevel::FullEvac | EvacuationLevel::Panic
+        );
+        let needs_hedge = matches!(
+            new_level,
+            EvacuationLevel::Hedge | EvacuationLevel::FullEvac
+        );
 
         EvacuationResponse {
             coin: event.coin.clone(),
@@ -800,10 +849,10 @@ impl EvacuationPipeline {
                 None
             },
             cooldown_ms: match new_level {
-                EvacuationLevel::FullEvac => 300_000,  // 5min
-                EvacuationLevel::Panic    => 600_000,  // 10min
-                EvacuationLevel::Hedge    => 120_000,  // 2min
-                _ => 60_000,  // 1min
+                EvacuationLevel::FullEvac => 300_000, // 5min
+                EvacuationLevel::Panic => 600_000,    // 10min
+                EvacuationLevel::Hedge => 120_000,    // 2min
+                _ => 60_000,                          // 1min
             },
         }
     }
@@ -858,11 +907,7 @@ pub struct Sniper {
 }
 
 impl Sniper {
-    pub fn new(
-        bus: SignalBus,
-        executor: Arc<Executor>,
-        coins: Vec<String>,
-    ) -> Self {
+    pub fn new(bus: SignalBus, executor: Arc<Executor>, coins: Vec<String>) -> Self {
         Self {
             detector: Arc::new(RwLock::new(ToxicFlowDetector::new())),
             obi_stream: OBIStream::new(5, true),

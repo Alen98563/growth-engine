@@ -20,11 +20,11 @@ use std::sync::Mutex;
 /// One row of label fuel — rich enough for counterfactual labeling.
 #[derive(Debug, Clone, Serialize)]
 pub struct CycleRecord {
-    pub ts: String,               // ISO-8601 UTC
+    pub ts: String, // ISO-8601 UTC
     pub coin: String,
-    pub state: String,            // NORMAL / PASSIVE_UNWIND / ...
-    pub pos_sz: f64,              // signed net position size
-    pub pos_notional: f64,        // |pos_sz × mid_px|
+    pub state: String,     // NORMAL / PASSIVE_UNWIND / ...
+    pub pos_sz: f64,       // signed net position size
+    pub pos_notional: f64, // |pos_sz × mid_px|
     pub withdrawable: f64,
     pub equity: f64,
     pub gross_spread_bps: f64,
@@ -33,10 +33,10 @@ pub struct CycleRecord {
     pub position_ratio: f64,
     pub volatility: f64,
     pub mid_px: f64,
-    pub bid_sz: f64,             // best bid depth (sum of top levels)
-    pub ask_sz: f64,             // best ask depth
-    pub placed_buy_sz: f64,      // size placed this cycle (buy)
-    pub placed_sell_sz: f64,     // size placed this cycle (sell)
+    pub bid_sz: f64,         // best bid depth (sum of top levels)
+    pub ask_sz: f64,         // best ask depth
+    pub placed_buy_sz: f64,  // size placed this cycle (buy)
+    pub placed_sell_sz: f64, // size placed this cycle (sell)
 }
 
 /// S3: Escape a CSV field per RFC 4180.

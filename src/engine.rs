@@ -26,9 +26,9 @@ use crate::state::{CoinStateMachine, State};
 use crate::traits::MarketAdapter;
 use crate::types::{MarketShockSignal, OrderOutcome, SignalBus};
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
 use futures_util::FutureExt;
 use rand::Rng;
+use std::collections::{HashMap, HashSet};
 use tokio::signal;
 use tokio::sync::watch;
 
@@ -74,7 +74,7 @@ pub async fn run<A: MarketAdapter>(
     mut labeler: Labeler,
 ) -> Result<()> {
     let risk = RiskEngine::new(cfg.clone());
-        let mut coin_state = CoinStateMachine::new();
+    let mut coin_state = CoinStateMachine::new();
     // P0+: Track chain position between cycles to detect WS-missed fills
     let mut last_known_position: HashMap<String, f64> = HashMap::new();
     // V12.6: directional freeze removed
@@ -148,7 +148,10 @@ pub async fn run<A: MarketAdapter>(
                 "PORTFOLIO HARD LIMIT: freezing flat coins"
             );
             for c in &cfg.coins {
-                let has_pos = account.positions.iter().any(|p| &p.coin == c && p.size.abs() > 0.001);
+                let has_pos = account
+                    .positions
+                    .iter()
+                    .any(|p| &p.coin == c && p.size.abs() > 0.001);
                 if matches!(coin_state.state_of(c), State::Active) && !has_pos {
                     coin_state.transition(c, State::Cooldown);
                 }
@@ -168,9 +171,9 @@ pub async fn run<A: MarketAdapter>(
 
             // ── S2: Get L2 book with staleness guard ──
             let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
 
             let book_stale = {
                 let books = bus.books.read();
@@ -181,8 +184,8 @@ pub async fn run<A: MarketAdapter>(
 
             let book = if book_stale {
                 rate_limit_delay().await;
-                        
-                        match adapter.fetch_l2(coin).await {
+
+                match adapter.fetch_l2(coin).await {
                     Ok(b) => {
                         let mut books = bus.books.write();
                         let still_stale = books.get(coin).map_or(true, |existing| {
@@ -212,50 +215,49 @@ pub async fn run<A: MarketAdapter>(
             // Retreat the attacked side by TOXIC_DEFENSE_TICKS to avoid being
             // picked off by the informed taker. Only in NORMAL/UNWIND states
             // (not during Shedding which already uses aggressive IOC pricing).
-            let (defensive_bid_px, defensive_ask_px) = if toxic_active
-                && matches!(current_state, State::Active | State::Unwind)
-            {
-                let tick = cfg.tick_for(coin);
-                let attack = shock.attack_side();
-                let mut bid = risk_out.bid_px;
-                let mut ask = risk_out.ask_px;
+            let (defensive_bid_px, defensive_ask_px) =
+                if toxic_active && matches!(current_state, State::Active | State::Unwind) {
+                    let tick = cfg.tick_for(coin);
+                    let attack = shock.attack_side();
+                    let mut bid = risk_out.bid_px;
+                    let mut ask = risk_out.ask_px;
 
-                match attack {
-                    Some("BUY") => {
-                        // Taker is buying → our asks are being eaten → retreat ask UP
-                        let retreated = ask + (TOXIC_DEFENSE_TICKS as f64 * tick);
-                        tracing::info!(
-                            coin = %coin,
-                            base_ask = ask,
-                            defended_ask = retreated,
-                            retreat_ticks = TOXIC_DEFENSE_TICKS,
-                            "toxic defense: ask retreated"
-                        );
-                        ask = retreated;
+                    match attack {
+                        Some("BUY") => {
+                            // Taker is buying → our asks are being eaten → retreat ask UP
+                            let retreated = ask + (TOXIC_DEFENSE_TICKS as f64 * tick);
+                            tracing::info!(
+                                coin = %coin,
+                                base_ask = ask,
+                                defended_ask = retreated,
+                                retreat_ticks = TOXIC_DEFENSE_TICKS,
+                                "toxic defense: ask retreated"
+                            );
+                            ask = retreated;
+                        }
+                        Some("SELL") => {
+                            // Taker is selling → our bids are being eaten → retreat bid DOWN
+                            let retreated = bid - (TOXIC_DEFENSE_TICKS as f64 * tick);
+                            tracing::info!(
+                                coin = %coin,
+                                base_bid = bid,
+                                defended_bid = retreated,
+                                retreat_ticks = TOXIC_DEFENSE_TICKS,
+                                "toxic defense: bid retreated"
+                            );
+                            bid = retreated;
+                        }
+                        _ => {
+                            // Mixed flow → retreat both sides slightly
+                            bid -= TOXIC_DEFENSE_TICKS as f64 * tick;
+                            ask += TOXIC_DEFENSE_TICKS as f64 * tick;
+                        }
                     }
-                    Some("SELL") => {
-                        // Taker is selling → our bids are being eaten → retreat bid DOWN
-                        let retreated = bid - (TOXIC_DEFENSE_TICKS as f64 * tick);
-                        tracing::info!(
-                            coin = %coin,
-                            base_bid = bid,
-                            defended_bid = retreated,
-                            retreat_ticks = TOXIC_DEFENSE_TICKS,
-                            "toxic defense: bid retreated"
-                        );
-                        bid = retreated;
-                    }
-                    _ => {
-                        // Mixed flow → retreat both sides slightly
-                        bid -= TOXIC_DEFENSE_TICKS as f64 * tick;
-                        ask += TOXIC_DEFENSE_TICKS as f64 * tick;
-                    }
-                }
 
-                (bid, ask)
-            } else {
-                (risk_out.bid_px, risk_out.ask_px)
-            };
+                    (bid, ask)
+                } else {
+                    (risk_out.bid_px, risk_out.ask_px)
+                };
 
             metrics.gross_spread_bps = risk_out.gross_spread_bps;
             metrics.net_spread_bps = risk_out.net_spread_bps;
@@ -265,8 +267,12 @@ pub async fn run<A: MarketAdapter>(
             metrics.withdrawable = account.withdrawable;
             metrics.equity = account.equity;
 
-            let pos = account.positions.iter()
-                .find(|p| &p.coin == coin).cloned().unwrap_or_default();
+            let pos = account
+                .positions
+                .iter()
+                .find(|p| &p.coin == coin)
+                .cloned()
+                .unwrap_or_default();
 
             // ── P0+: Detect position changes missed by WS fill events ──
             // P1: When WS misses a fill, gracefully cold-restart the coin
@@ -384,8 +390,10 @@ pub async fn run<A: MarketAdapter>(
                         "GATE_BLOCKED: cancelling all, gross {:.1} < {} ticks", gross_ticks, cfg.gate_block_ticks
                     );
                     adapter.cancel_all_for_coin(coin).await.ok();
-                    coin_state.enter_gate_blocked(coin,
-                        &format!("gross {:.1} < {}", gross_ticks, cfg.gate_block_ticks));
+                    coin_state.enter_gate_blocked(
+                        coin,
+                        &format!("gross {:.1} < {}", gross_ticks, cfg.gate_block_ticks),
+                    );
                 }
             } else {
                 if coin_state.is_gate_blocked(coin) {
@@ -403,9 +411,7 @@ pub async fn run<A: MarketAdapter>(
             // ── 4. Per-coin state transitions ──
             match current_state {
                 State::Idle => {
-                    if risk.has_reserve(account.withdrawable)
-                        && risk_out.gross_spread_bps > 0.0
-                    {
+                    if risk.has_reserve(account.withdrawable) && risk_out.gross_spread_bps > 0.0 {
                         coin_state.transition(coin, State::ColdStart);
                     }
                 }
@@ -444,9 +450,8 @@ pub async fn run<A: MarketAdapter>(
                             coin_state.transition(coin, State::Cooldown);
                         }
                     } else {
-                        let (should_unwind, _) = risk.unwind_check(
-                            risk_out.position_ratio, pos.size
-                        );
+                        let (should_unwind, _) =
+                            risk.unwind_check(risk_out.position_ratio, pos.size);
                         if should_unwind {
                             tracing::info!(
                                 coin = %coin,
@@ -459,12 +464,21 @@ pub async fn run<A: MarketAdapter>(
                         // Active but conditions deteriorated -> Waiting
                         let rtc = cfg.roundtrip_bps();
                         let msp = rtc + cfg.min_margin_bps;
-                        if !should_unwind && risk_out.net_spread_bps <= msp && matches!(coin_state.state_of(coin), State::Active) {
-                            let reason = format!("net_spread {:.2} <= min {:.2} bps (deteriorated)", risk_out.net_spread_bps, msp);
+                        if !should_unwind
+                            && risk_out.net_spread_bps <= msp
+                            && matches!(coin_state.state_of(coin), State::Active)
+                        {
+                            let reason = format!(
+                                "net_spread {:.2} <= min {:.2} bps (deteriorated)",
+                                risk_out.net_spread_bps, msp
+                            );
                             tracing::warn!(coin=%coin, reason=%reason, "Active: spread collapsed -> Waiting");
                             coin_state.enter_waiting(coin, &reason);
                         }
-                        if !should_unwind && portfolio_over_limit && matches!(coin_state.state_of(coin), State::Active) {
+                        if !should_unwind
+                            && portfolio_over_limit
+                            && matches!(coin_state.state_of(coin), State::Active)
+                        {
                             tracing::warn!(coin=%coin, "Active: portfolio over limit -> Waiting");
                             coin_state.enter_waiting(coin, "portfolio over limit (deteriorated)");
                         }
@@ -499,7 +513,7 @@ pub async fn run<A: MarketAdapter>(
 
                     loop {
                         rate_limit_delay().await;
-                        
+
                         let fresh_book = match adapter.fetch_l2(coin).await {
                             Ok(b) => b,
                             Err(e) => {
@@ -549,12 +563,7 @@ pub async fn run<A: MarketAdapter>(
                         }
 
                         match adapter
-                            .place_ioc_order(
-                                coin,
-                                is_buy,
-                                recheck.shed_size,
-                                aggressive_px,
-                            )
+                            .place_ioc_order(coin, is_buy, recheck.shed_size, aggressive_px)
                             .await
                         {
                             Ok(Some(filled)) => {
@@ -598,7 +607,9 @@ pub async fn run<A: MarketAdapter>(
                                 book.best_ask().unwrap_or(mid) * 1.05
                             };
                             let _tick = cfg.tick_for(coin);
-                            let pos_sz = account.positions.iter()
+                            let pos_sz = account
+                                .positions
+                                .iter()
                                 .find(|p| &p.coin == coin)
                                 .map(|p| p.size.abs())
                                 .unwrap_or(0.0);
@@ -650,14 +661,23 @@ pub async fn run<A: MarketAdapter>(
                     if coin_state.cooldown_done(coin) {
                         let rt = cfg.roundtrip_bps();
                         let msp = rt + cfg.min_margin_bps;
-                        if risk_out.net_spread_bps > msp && !portfolio_over_limit && risk.has_reserve(account.withdrawable) {
+                        if risk_out.net_spread_bps > msp
+                            && !portfolio_over_limit
+                            && risk.has_reserve(account.withdrawable)
+                        {
                             tracing::info!(coin=%coin, net_spread=risk_out.net_spread_bps, min_spread=msp, "cooldown elapsed, conditions favorable -> Active");
                             coin_state.transition(coin, State::Active);
                         } else {
                             let reason = if risk_out.net_spread_bps <= msp {
-                                format!("net_spread {:.2} <= min {:.2} bps", risk_out.net_spread_bps, msp)
-                            } else if portfolio_over_limit { "portfolio over limit".to_string() }
-                            else { format!("reserve depleted (wd={})", account.withdrawable) };
+                                format!(
+                                    "net_spread {:.2} <= min {:.2} bps",
+                                    risk_out.net_spread_bps, msp
+                                )
+                            } else if portfolio_over_limit {
+                                "portfolio over limit".to_string()
+                            } else {
+                                format!("reserve depleted (wd={})", account.withdrawable)
+                            };
                             tracing::warn!(coin=%coin, reason=%reason, "cooldown elapsed but conditions not met -> Waiting");
                             coin_state.enter_waiting(coin, &reason);
                         }
@@ -672,7 +692,10 @@ pub async fn run<A: MarketAdapter>(
                 State::Waiting => {
                     let rt = cfg.roundtrip_bps();
                     let msp = rt + cfg.min_margin_bps;
-                    if risk_out.net_spread_bps > msp && !portfolio_over_limit && risk.has_reserve(account.withdrawable) {
+                    if risk_out.net_spread_bps > msp
+                        && !portfolio_over_limit
+                        && risk.has_reserve(account.withdrawable)
+                    {
                         if coin_state.tick_waiting(coin, cfg.spread_stable_cycles) {
                             tracing::info!(coin=%coin, favorable_cycles=cfg.spread_stable_cycles, net_spread=risk_out.net_spread_bps, "Waiting: conditions met -> Active");
                             coin_state.transition(coin, State::Active);
@@ -703,7 +726,8 @@ pub async fn run<A: MarketAdapter>(
             // if its notional exceeds INDIVIDUAL_COIN_CAP fraction of equity.
             // Prevents the 6/29 rampage where HMSTR went from $5→$54 (33% equity).
             const INDIVIDUAL_COIN_CAP: f64 = 0.20;
-            let coin_notional_ratio = (pos.size.abs() * (risk_out.bid_px + risk_out.ask_px) / 2.0) / account.equity.max(1.0);
+            let coin_notional_ratio = (pos.size.abs() * (risk_out.bid_px + risk_out.ask_px) / 2.0)
+                / account.equity.max(1.0);
             let coin_over_exposed = coin_notional_ratio > INDIVIDUAL_COIN_CAP;
             if coin_over_exposed {
                 tracing::warn!(
@@ -720,7 +744,8 @@ pub async fn run<A: MarketAdapter>(
             // qty" progressive rebalancing IS a reducing action — blocking it creates
             // a deadlock where no coin enters UNWIND individually but aggregate is over limit.
             let can_place = coin_state.can_place_orders(coin);
-            let portfolio_reduce = (portfolio_over_limit || coin_over_exposed) && pos.size.abs() > 0.001;
+            let portfolio_reduce =
+                (portfolio_over_limit || coin_over_exposed) && pos.size.abs() > 0.001;
             if portfolio_reduce {
                 tracing::warn!(
                     coin = %coin,
@@ -738,13 +763,13 @@ pub async fn run<A: MarketAdapter>(
             if (can_place && spread_ok) || is_unwind || portfolio_reduce {
                 // V12.6: directional freeze ban removed
                 let mut buy_sz = {
-                let cs = coin_state.get_or_init(coin);
-                risk_out.buy_sz * cs.size_multiplier
-            };
+                    let cs = coin_state.get_or_init(coin);
+                    risk_out.buy_sz * cs.size_multiplier
+                };
                 let mut sell_sz = {
-                let cs = coin_state.get_or_init(coin);
-                risk_out.sell_sz * cs.size_multiplier
-            };
+                    let cs = coin_state.get_or_init(coin);
+                    risk_out.sell_sz * cs.size_multiplier
+                };
 
                 // V12.1: COARSE mode sensitive skew — block side after N same-side fills
                 {
@@ -767,71 +792,72 @@ pub async fn run<A: MarketAdapter>(
                         if buys == 0 && sells == 0 {
                             tracing::debug!(coin=%coin, "COARSE: both sides clear");
                         }
-                    // V12.2: COARSE_TICK_HARVEST Asymmetric Sizing — position defense for 1-tick markets.
-                    //
-                    // In 1-tick markets, price shading CANNOT work (spread already at minimum).
-                    // Instead SIZE asymmetry steers inventory toward zero:
-                    //
-                    //   pos_ratio < 5%      → Bilateral full-size (buy = sell, both sides)
-                    //   pos_ratio 5%-30%    → Asymmetric: unwind side BOOSTED 1.2x, adverse CAPPED at 25%
-                    //   pos_ratio 30%-60%   → Hard kill: adverse side ZERO, only unwind side
-                    //   pos_ratio >= 60%    → Hard limit: CANCEL ALL + FREEZE (manual intervention)
-                    //
-                    // Threshold rule: coarse_pos_ratio_hard_kill MUST exceed
-                    // (base_order_notional / hard_limit) to avoid single-fill lockout.
-                    // Currently: 0.30 > 35.0 / 149.84 = 0.233 ✓
-                    {
-                        let gate_v122 = coin_state.get_or_init(coin).gate_mode.clone();
-                        if gate_v122 == "COARSE" {
-                            let pr_abs = risk_out.position_ratio.abs();
-                            let favor_buy = pos.size < 0.0;
-                            let favor_sell = pos.size > 0.0;
-                            if pr_abs > cfg.coarse_pos_ratio_aggressive && pr_abs <= cfg.coarse_pos_ratio_hard_kill {
-                                let boost = cfg.coarse_unwind_size_boost;
-                                if favor_buy {
-                                    buy_sz *= boost;
-                                    if buy_sz > 0.0 {
-                                        sell_sz = sell_sz.min(buy_sz * 0.25);
-                                    } else {
-                                        // V12.5.1: Directional freeze killed unwind side —
-                                        // fallback cap at 10% to prevent zero-deadlock
-                                        sell_sz *= 0.10;
-                                    }
-                                    tracing::info!(coin=%coin, pr_pct=%format!("{:.1}", pr_abs*100.0),
+                        // V12.2: COARSE_TICK_HARVEST Asymmetric Sizing — position defense for 1-tick markets.
+                        //
+                        // In 1-tick markets, price shading CANNOT work (spread already at minimum).
+                        // Instead SIZE asymmetry steers inventory toward zero:
+                        //
+                        //   pos_ratio < 5%      → Bilateral full-size (buy = sell, both sides)
+                        //   pos_ratio 5%-30%    → Asymmetric: unwind side BOOSTED 1.2x, adverse CAPPED at 25%
+                        //   pos_ratio 30%-60%   → Hard kill: adverse side ZERO, only unwind side
+                        //   pos_ratio >= 60%    → Hard limit: CANCEL ALL + FREEZE (manual intervention)
+                        //
+                        // Threshold rule: coarse_pos_ratio_hard_kill MUST exceed
+                        // (base_order_notional / hard_limit) to avoid single-fill lockout.
+                        // Currently: 0.30 > 35.0 / 149.84 = 0.233 ✓
+                        {
+                            let gate_v122 = coin_state.get_or_init(coin).gate_mode.clone();
+                            if gate_v122 == "COARSE" {
+                                let pr_abs = risk_out.position_ratio.abs();
+                                let favor_buy = pos.size < 0.0;
+                                let favor_sell = pos.size > 0.0;
+                                if pr_abs > cfg.coarse_pos_ratio_aggressive
+                                    && pr_abs <= cfg.coarse_pos_ratio_hard_kill
+                                {
+                                    let boost = cfg.coarse_unwind_size_boost;
+                                    if favor_buy {
+                                        buy_sz *= boost;
+                                        if buy_sz > 0.0 {
+                                            sell_sz = sell_sz.min(buy_sz * 0.25);
+                                        } else {
+                                            // V12.5.1: Directional freeze killed unwind side —
+                                            // fallback cap at 10% to prevent zero-deadlock
+                                            sell_sz *= 0.10;
+                                        }
+                                        tracing::info!(coin=%coin, pr_pct=%format!("{:.1}", pr_abs*100.0),
                                         buy_sz=%format!("{:.4}", buy_sz), sell_sz=%format!("{:.4}", sell_sz),
                                         "COARSE asymmetric: SHORT pos -> boost BUY {:.1}x, cap SELL", boost);
-                                } else if favor_sell {
-                                    sell_sz *= boost;
-                                    if sell_sz > 0.0 {
-                                        buy_sz = buy_sz.min(sell_sz * 0.25);
-                                    } else {
-                                        // V12.5.1: Directional freeze killed unwind side —
-                                        // fallback cap at 10% to prevent zero-deadlock
-                                        buy_sz *= 0.10;
-                                    }
-                                    tracing::info!(coin=%coin, pr_pct=%format!("{:.1}", pr_abs*100.0),
+                                    } else if favor_sell {
+                                        sell_sz *= boost;
+                                        if sell_sz > 0.0 {
+                                            buy_sz = buy_sz.min(sell_sz * 0.25);
+                                        } else {
+                                            // V12.5.1: Directional freeze killed unwind side —
+                                            // fallback cap at 10% to prevent zero-deadlock
+                                            buy_sz *= 0.10;
+                                        }
+                                        tracing::info!(coin=%coin, pr_pct=%format!("{:.1}", pr_abs*100.0),
                                         buy_sz=%format!("{:.4}", buy_sz), sell_sz=%format!("{:.4}", sell_sz),
                                         "COARSE asymmetric: LONG pos -> boost SELL {:.1}x, cap BUY", boost);
-                                }
-                            } else if pr_abs > cfg.coarse_pos_ratio_hard_kill {
-                                let boost = cfg.coarse_unwind_size_boost;
-                                if favor_buy {
-                                    buy_sz *= boost;
-                                    sell_sz = 0.0;
-                                    tracing::warn!(coin=%coin, pr_pct=%format!("{:.1}", pr_abs*100.0),
+                                    }
+                                } else if pr_abs > cfg.coarse_pos_ratio_hard_kill {
+                                    let boost = cfg.coarse_unwind_size_boost;
+                                    if favor_buy {
+                                        buy_sz *= boost;
+                                        sell_sz = 0.0;
+                                        tracing::warn!(coin=%coin, pr_pct=%format!("{:.1}", pr_abs*100.0),
                                         buy_sz=%format!("{:.4}", buy_sz),
                                         "COARSE hard kill: SELL ZERO, BUY {:.1}x", boost);
-                                } else if favor_sell {
-                                    sell_sz *= boost;
-                                    buy_sz = 0.0;
-                                    tracing::warn!(coin=%coin, pr_pct=%format!("{:.1}", pr_abs*100.0),
+                                    } else if favor_sell {
+                                        sell_sz *= boost;
+                                        buy_sz = 0.0;
+                                        tracing::warn!(coin=%coin, pr_pct=%format!("{:.1}", pr_abs*100.0),
                                         sell_sz=%format!("{:.4}", sell_sz),
                                         "COARSE hard kill: BUY ZERO, SELL {:.1}x", boost);
+                                    }
                                 }
                             }
                         }
-                    }
-
                     }
                 }
 
@@ -886,22 +912,24 @@ pub async fn run<A: MarketAdapter>(
                         if unwind_buy_sz > 0.0 {
                             match adapter
                                 .place_gtc_order(coin, true, unwind_buy_sz, aggressive_px, false)
-                            .await
-                        {
-                            Ok(OrderOutcome::Rested(oid)) => {
-                                new_oids.push(oid);
-                                metrics.placed_buy = true;
+                                .await
+                            {
+                                Ok(OrderOutcome::Rested(oid)) => {
+                                    new_oids.push(oid);
+                                    metrics.placed_buy = true;
+                                }
+                                Ok(OrderOutcome::FilledTaker) => {
+                                    metrics.placed_buy = true;
+                                    tracing::info!(coin=%coin, "unwind BUY filled as taker");
+                                }
+                                Ok(OrderOutcome::Rejected(reason)) => {
+                                    tracing::warn!(coin=%coin, ?reason, "unwind BUY rejected");
+                                }
+                                Err(e) => {
+                                    tracing::warn!(coin=%coin, side="BUY", ?e, "unwind order error")
+                                }
                             }
-                            Ok(OrderOutcome::FilledTaker) => {
-                                metrics.placed_buy = true;
-                                tracing::info!(coin=%coin, "unwind BUY filled as taker");
-                            }
-                            Ok(OrderOutcome::Rejected(reason)) => {
-                                tracing::warn!(coin=%coin, ?reason, "unwind BUY rejected");
-                            }
-                            Err(e) => tracing::warn!(coin=%coin, side="BUY", ?e, "unwind order error"),
-                        }
-                        }  // close if unwind_buy_sz > 0.0
+                        } // close if unwind_buy_sz > 0.0
                     } else {
                         let gate_mode = coin_state.get_or_init(coin).gate_mode.clone();
                         let mut shading_offset = calculate_bid_tick_offset(
@@ -915,7 +943,8 @@ pub async fn run<A: MarketAdapter>(
                         } else if risk_out.gross_spread_bps >= 30.0 {
                             shading_offset = shading_offset.min(1);
                         }
-                        let shaded_bid = apply_bid_shading(defensive_bid_px, shading_offset, coin_tick);
+                        let shaded_bid =
+                            apply_bid_shading(defensive_bid_px, shading_offset, coin_tick);
                         if shading_offset > 0 || toxic_active {
                             tracing::info!(
                                 coin = %coin,
@@ -928,7 +957,7 @@ pub async fn run<A: MarketAdapter>(
                             );
                         }
                         rate_limit_delay().await;
-                        
+
                         match adapter
                             .place_limit_order(coin, true, risk_out.buy_sz, shaded_bid, false)
                             .await
@@ -975,26 +1004,29 @@ pub async fn run<A: MarketAdapter>(
                         if unwind_sell_sz > 0.0 {
                             match adapter
                                 .place_gtc_order(coin, false, unwind_sell_sz, aggressive_px, false)
-                            .await
-                        {
-                            Ok(OrderOutcome::Rested(oid)) => {
-                                new_oids.push(oid);
-                                metrics.placed_sell = true;
+                                .await
+                            {
+                                Ok(OrderOutcome::Rested(oid)) => {
+                                    new_oids.push(oid);
+                                    metrics.placed_sell = true;
+                                }
+                                Ok(OrderOutcome::FilledTaker) => {
+                                    metrics.placed_sell = true;
+                                    tracing::info!(coin=%coin, "unwind SELL filled as taker");
+                                }
+                                Ok(OrderOutcome::Rejected(reason)) => {
+                                    tracing::warn!(coin=%coin, ?reason, "unwind SELL rejected");
+                                }
+                                Err(e) => {
+                                    tracing::warn!(coin=%coin, side="SELL", ?e, "unwind order error")
+                                }
                             }
-                            Ok(OrderOutcome::FilledTaker) => {
-                                metrics.placed_sell = true;
-                                tracing::info!(coin=%coin, "unwind SELL filled as taker");
-                            }
-                            Ok(OrderOutcome::Rejected(reason)) => {
-                                tracing::warn!(coin=%coin, ?reason, "unwind SELL rejected");
-                            }
-                            Err(e) => tracing::warn!(coin=%coin, side="SELL", ?e, "unwind order error"),
-                        }
-                        }  // close if unwind_sell_sz > 0.0
+                        } // close if unwind_sell_sz > 0.0
                     } else {
                         // ASK shading: retreat SELL upward when rejected
                         let ask_reject = coin_state.ask_rejection_count(coin);
-                        let mut ask_offset = calculate_ask_tick_offset(ask_reject, risk_out.skew_bps);
+                        let mut ask_offset =
+                            calculate_ask_tick_offset(ask_reject, risk_out.skew_bps);
                         // V12.1: COARSE mode — zero shading
                         let gate_mode_se = coin_state.get_or_init(coin).gate_mode.clone();
                         if gate_mode_se == "COARSE" {
@@ -1031,8 +1063,10 @@ pub async fn run<A: MarketAdapter>(
                                 if reason.to_lowercase().contains("would match") =>
                             {
                                 let count = coin_state.increment_ask_rejections(coin);
-                                let mut bid_offset = calculate_bid_tick_offset(count, risk_out.skew_bps);
-                                let mut ask_offset2 = calculate_ask_tick_offset(count, risk_out.skew_bps);
+                                let mut bid_offset =
+                                    calculate_bid_tick_offset(count, risk_out.skew_bps);
+                                let mut ask_offset2 =
+                                    calculate_ask_tick_offset(count, risk_out.skew_bps);
                                 // V12.1: COARSE mode — zero shading
                                 let gate_mode_rr = coin_state.get_or_init(coin).gate_mode.clone();
                                 if gate_mode_rr == "COARSE" {
@@ -1055,7 +1089,9 @@ pub async fn run<A: MarketAdapter>(
                             Ok(OrderOutcome::Rejected(reason)) => {
                                 tracing::debug!(coin = %coin, ?reason, "sell order rejected");
                             }
-                            Err(e) => tracing::warn!(coin = %coin, side = "SELL", ?e, "order error"),
+                            Err(e) => {
+                                tracing::warn!(coin = %coin, side = "SELL", ?e, "order error")
+                            }
                         }
                     }
                 }
@@ -1124,11 +1160,22 @@ pub async fn run<A: MarketAdapter>(
 
             // ── 7. Label recording ──
             {
-                let pos = account.positions.iter()
-                    .find(|p| &p.coin == coin).cloned().unwrap_or_default();
+                let pos = account
+                    .positions
+                    .iter()
+                    .find(|p| &p.coin == coin)
+                    .cloned()
+                    .unwrap_or_default();
                 let book_guard = bus.books.read();
-                let (bid_sz, ask_sz, mid_px) = book_guard.get(coin)
-                    .map(|b| (b.total_bid_depth(), b.total_ask_depth(), b.mid_price().unwrap_or(0.0)))
+                let (bid_sz, ask_sz, mid_px) = book_guard
+                    .get(coin)
+                    .map(|b| {
+                        (
+                            b.total_bid_depth(),
+                            b.total_ask_depth(),
+                            b.mid_price().unwrap_or(0.0),
+                        )
+                    })
                     .unwrap_or((0.0, 0.0, 0.0));
                 drop(book_guard);
 
@@ -1259,7 +1306,7 @@ async fn bootstrap_recovery<A: MarketAdapter>(
         }
 
         rate_limit_delay().await;
-                    let book = match adapter.fetch_l2(coin).await {
+        let book = match adapter.fetch_l2(coin).await {
             Ok(b) => {
                 bus.books.write().insert(coin.clone(), b.clone());
                 b
@@ -1279,7 +1326,9 @@ async fn bootstrap_recovery<A: MarketAdapter>(
         // V12.7: withdrawable safety floor — when HL reports negative withdrawable
         // (leverage/liability state), fall back to equity-based estimate instead of
         // collapsing hard_limit to $1.0 which would lock the engine permanently.
-        let effective_wd = account.withdrawable.max(account.equity * cfg.hard_limit_ratio * 0.5);
+        let effective_wd = account
+            .withdrawable
+            .max(account.equity * cfg.hard_limit_ratio * 0.5);
         let hard_limit = if effective_wd > 0.0 {
             effective_wd * cfg.hard_limit_ratio
         } else {
@@ -1313,10 +1362,9 @@ async fn cancel_active_orders<A: MarketAdapter>(
     coin: &str,
     active_orders: &mut Vec<(String, u64)>,
 ) {
-    let (ours, rest): (Vec<_>, Vec<_>) =
-        std::mem::take(active_orders)
-            .into_iter()
-            .partition(|(c, _)| c == coin);
+    let (ours, rest): (Vec<_>, Vec<_>) = std::mem::take(active_orders)
+        .into_iter()
+        .partition(|(c, _)| c == coin);
 
     *active_orders = rest;
 
@@ -1351,7 +1399,13 @@ fn apply_bid_shading(base_bid_px: f64, offset: u32, tick_size: f64) -> f64 {
 /// Returns how many ticks to RETREAT the ASK upward
 /// when our SELL Post-Only orders keep getting rejected.
 fn calculate_ask_tick_offset(sell_rejections: u32, skew_bps: f64) -> u32 {
-    let base = if sell_rejections >= 6 { 2 } else if sell_rejections >= 3 { 1 } else { 0 };
+    let base = if sell_rejections >= 6 {
+        2
+    } else if sell_rejections >= 3 {
+        1
+    } else {
+        0
+    };
     let skew_adjust = (skew_bps.max(0.0) * 0.5) as u32; // half as aggressive as bid side
     (base + skew_adjust).min(10) // cap at 10 ticks
 }

@@ -4,8 +4,8 @@
 //! Level 0 = nearest to mid, Level N-1 = farthest. Tracks per-level state
 //! (Idle -> Active -> Filled/Cancelled) and detects drift for re-quoting.
 
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// A single price level in the multi-level quote grid
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,7 +93,13 @@ impl LevelManager {
 
     /// Check if a level needs re-quoting:
     /// true if filled, cancelled, or price drifted too far (>2 sigma away)
-    pub fn needs_requote(&self, level: u32, current_target_px: f64, tick: f64, sigma_ticks: f64) -> bool {
+    pub fn needs_requote(
+        &self,
+        level: u32,
+        current_target_px: f64,
+        tick: f64,
+        sigma_ticks: f64,
+    ) -> bool {
         match self.orders.get(&level) {
             None => true,
             Some(o) => match o.state {
@@ -119,7 +125,10 @@ impl LevelManager {
 
     /// Count of currently active orders
     pub fn active_count(&self) -> usize {
-        self.orders.values().filter(|o| o.state == LevelState::Active).count()
+        self.orders
+            .values()
+            .filter(|o| o.state == LevelState::Active)
+            .count()
     }
 
     /// Total notional of active orders (approximate, from placed_sz)

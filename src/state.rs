@@ -153,8 +153,7 @@ pub struct PerCoinState {
     pub favorable_cycles: u32,
     /// Last reason for being in Waiting state
     pub waiting_reason: String,
-
-        }
+}
 
 impl PerCoinState {
     /// Create a new per-coin state machine in Idle state.
@@ -180,7 +179,6 @@ impl PerCoinState {
             favorable_cycles: 0,
             waiting_reason: String::new(),
         }
-
     }
 
     /// Create a PerCoinState with a pre-set state — used by bootstrap recovery
@@ -239,7 +237,8 @@ impl CoinStateMachine {
     /// Force-inject a coin with a pre-set state — used by bootstrap recovery
     /// to map existing positions into the correct FSM lane.
     pub fn init_coin(&mut self, coin: &str, state: State) {
-        self.coins.insert(coin.to_string(), PerCoinState::new_with_state(state));
+        self.coins
+            .insert(coin.to_string(), PerCoinState::new_with_state(state));
     }
 
     /// Get or initialize state for a coin.
@@ -247,7 +246,7 @@ impl CoinStateMachine {
         self.coins
             .entry(coin.to_string())
             .or_insert_with(PerCoinState::new)
-        }
+    }
 
     /// Current state for a coin (Idle if never seen).
     pub fn state_of(&mut self, coin: &str) -> State {
@@ -262,7 +261,7 @@ impl CoinStateMachine {
         if cs.state != next {
             cs.cold_start_cycles = 0; // V12.5: reset cold start counter on transition
             cs.ask_rejections = 0; // fresh start in new state
-            cs.buy_fills_tally = 0;  // V12.1: reset fill tallies
+            cs.buy_fills_tally = 0; // V12.1: reset fill tallies
             cs.sell_fills_tally = 0;
             tracing::info!(
                 coin = %coin,
@@ -299,7 +298,9 @@ impl CoinStateMachine {
 
     /// Check if coin is currently gate-blocked.
     pub fn is_gate_blocked(&self, coin: &str) -> bool {
-        self.coins.get(coin).map_or(false, |cs| cs.state == State::GateBlocked)
+        self.coins
+            .get(coin)
+            .map_or(false, |cs| cs.state == State::GateBlocked)
     }
 
     /// Transition to Waiting with a human-readable reason.
@@ -355,7 +356,9 @@ impl CoinStateMachine {
     /// Decrement the post-unwind cooldown counter by one cycle.
     pub fn tick_unwind_cooldown(&mut self, coin: &str) {
         let cs = self.get_or_init(coin);
-        if cs.unwind_cooldown > 0 { cs.unwind_cooldown -= 1; }
+        if cs.unwind_cooldown > 0 {
+            cs.unwind_cooldown -= 1;
+        }
     }
 
     /// Set or reset the post-unwind BUY-suppression cooldown to a fixed number of cycles.
@@ -433,12 +436,16 @@ impl CoinStateMachine {
 
     /// Check if buy side should be stopped (COARSE mode sensitive skew).
     pub fn buy_side_tapped_out(&self, coin: &str, max_fills: u32) -> bool {
-        self.coins.get(coin).map_or(false, |cs| cs.buy_fills_tally >= max_fills)
+        self.coins
+            .get(coin)
+            .map_or(false, |cs| cs.buy_fills_tally >= max_fills)
     }
 
     /// Check if sell side should be stopped (COARSE mode sensitive skew).
     pub fn sell_side_tapped_out(&self, coin: &str, max_fills: u32) -> bool {
-        self.coins.get(coin).map_or(false, |cs| cs.sell_fills_tally >= max_fills)
+        self.coins
+            .get(coin)
+            .map_or(false, |cs| cs.sell_fills_tally >= max_fills)
     }
 
     // ── V8 Flip Hysteresis: prevent directional whiplash ──
@@ -487,12 +494,18 @@ impl CoinStateMachine {
 
     /// Returns true if directional freeze is active.
     pub fn is_frozen(&self, coin: &str) -> bool {
-        self.coins.get(coin).map(|c| c.freeze_remaining > 0).unwrap_or(false)
+        self.coins
+            .get(coin)
+            .map(|c| c.freeze_remaining > 0)
+            .unwrap_or(false)
     }
 
     /// Returns the freeze direction: -1=SHORT_freeze, 1=LONG_freeze, 0=none.
     pub fn freeze_direction_for(&self, coin: &str) -> i8 {
-        self.coins.get(coin).map(|c| c.freeze_direction).unwrap_or(0)
+        self.coins
+            .get(coin)
+            .map(|c| c.freeze_direction)
+            .unwrap_or(0)
     }
 
     // ── V12.2: Fill toxicity momentum tracking ──
