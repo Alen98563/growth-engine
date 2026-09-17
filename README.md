@@ -7,7 +7,7 @@
 [![Architecture](https://img.shields.io/badge/architecture-3--layer%20%2B%2013%20defense%20layers-7c3aed)](#architecture)
 [![Status](https://img.shields.io/badge/status-dormant%20%C2%B7%20revive--ready-amber)](#revive-conditions)
 
-> **TL;DR —** Growth Engine is a complete, deployed market-making system (6,636 LOC Rust + 2,215 LOC Python, 22 commits, a multi-layer risk engine — 9 mechanisms verified implemented in the core). Its economics are governed by **one variable**: the maker fee. Below ~1.5 bps of maker cost the engine has a **structural, positive-expectancy edge**. On **$1,000,000 of capital** at a conservative 6× daily turnover with a Tier-3 maker rebate, the model yields **≈ $613,000 / year (61.3% return on capital)** — a *modelled* figure, not a live result (see §2.7). The engine is deployed, audited, and waiting for that regime.
+> **TL;DR —** Growth Engine is a complete, deployed market-making system (6,621 LOC Rust + 2,205 LOC Python, 22 commits, a multi-layer risk engine — 9 mechanisms verified implemented in the core). Its economics are governed by **one variable**: the maker fee. Below ~1.5 bps of maker cost the engine has a **structural, positive-expectancy edge**. On **$1,000,000 of capital** at a conservative 6× daily turnover with a Tier-3 maker rebate, the model yields **≈ $613,000 / year (61.3% return on capital)** — a *modelled* figure, not a live result (see §2.7). The engine is deployed, audited, and waiting for that regime.
 
 ---
 
@@ -243,8 +243,8 @@ So the chain has **6 tiers** (not 13, and not 9 — those counts belong to the *
 
 ## 6. Engineering Highlights
 
-- **6,636 LOC Rust** across 15 modules, calibrated by `cargo fmt` + `clippy -D warnings` + 18 unit tests, all enforced in CI (`.github/workflows/ci.yml`).
-- **2,215 LOC Python** (live) — signing bridge, 4-stage funnel scanner, counterfactual labeller, test harness. Plus 2,114 LOC of archived one-off patches under `archive/`.
+- **6,621 LOC Rust** across 15 modules *(lines incl. blank, = `wc -l`; reproducible via `python3 scripts/loc.py src .rs`)*, calibrated by `cargo fmt` + `clippy -D warnings` + 18 unit tests, all enforced in CI (`.github/workflows/ci.yml`).
+- **2,205 LOC Python** (product, 10 files) — signing bridge, 4-stage funnel scanner, counterfactual labeller, test harness. Plus 2,100 LOC of archived one-off patches under `archive/`, and a small dev-tooling set (`scripts/bench_*.py`, `scripts/loc.py`).
 - **24,809-row tick-level label dataset** (`data/labels.csv`) — every engine cycle logged with spread, skew, volatility, position ratio, and quote state.
 - **4-stage funnel scanner** — Volume → Velocity → Depth → Coarse-sort across the full perp universe (169 coins passed the volume gate).
 - **22 commits, 6 release tags** (`v4-scanner` → `v12.2-hotfix-freeze`), each mapped to a concrete production incident.
@@ -359,7 +359,7 @@ cargo build --release   # RUSTFLAGS="-D warnings" for CI parity
 
 ```
 growth-engine/
-├── src/                    6,636 LOC Rust
+├── src/                    6,621 LOC Rust
 │   ├── engine.rs           main loop + gate chain (1,316)
 │   ├── risk.rs             risk engine + skew/qty math (399)
 │   ├── state.rs            per-coin FSM (477)
