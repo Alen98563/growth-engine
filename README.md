@@ -4,10 +4,10 @@
 
 [![Rust](https://img.shields.io/badge/Rust-1.70%2B-000?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Architecture](https://img.shields.io/badge/architecture-3--layer%20%2B%2013%20defense%20layers-7c3aed)](#architecture)
+[![Architecture](https://img.shields.io/badge/architecture-3--layer%20%2B%20%2214%20live%20risk%20mechanisms%22-7c3aed)](#architecture)
 [![Status](https://img.shields.io/badge/status-dormant%20%C2%B7%20revive--ready-amber)](#revive-conditions)
 
-> **TL;DR —** Growth Engine is a complete, deployed market-making system (6,621 LOC Rust + 2,205 LOC Python, 22 commits, a multi-layer risk engine — 9 mechanisms verified implemented in the core). Its economics are governed by **one variable**: the maker fee. Below ~1.5 bps of maker cost the engine has a **structural, positive-expectancy edge**. On **$1,000,000 of capital** at a conservative 6× daily turnover with a Tier-3 maker rebate, the model yields **≈ $613,000 / year (61.3% return on capital)** — a *modelled* figure, not a live result (see §2.7). The engine is deployed, audited, and waiting for that regime.
+> **TL;DR —** Growth Engine is a complete, deployed market-making system (6,621 LOC Rust + 2,205 LOC Python, 22 commits, a multi-layer risk engine — 14 mechanisms verified reachable from the engine loop by call-site analysis). Its economics are governed by **one variable**: the maker fee. Below ~1.5 bps of maker cost the engine has a **structural, positive-expectancy edge**. On **$1,000,000 of capital** at a conservative 6× daily turnover with a Tier-3 maker rebate, the model yields **≈ $613,000 / year (61.3% return on capital)** — a *modelled* figure, not a live result (see §2.7). The engine is deployed, audited, and waiting for that regime.
 
 ---
 
@@ -196,35 +196,48 @@ A deliberately small, auditable surface: **three layers, one state machine, one 
 - **`levels.rs`** — multi-level quote grid with drift detection and per-level lifecycle.
 
 ### 4.3 Execution layer
-- **`executor.rs`** — REST client with sliding-window **circuit breaker**, batch orders, tick-retreat retry on "would match", OID-based cancellation.
+- **`executor.rs`** — REST client with monotonically-increasing nonce (CAS), batch orders, tick-retreat retry on "would match", OID-based cancellation. *(A circuit breaker is described in the module doc but is **not implemented** — the `Executor` struct has no breaker field. See §5.)*
 - **`signer.rs`** — EIP-712 signing bridge to the official `hyperliquid-python-sdk`; returns **wire-format** px/sz strings that must be used verbatim in the request body.
 - **`config.rs`** — all tunables, `.env`-driven with safe defaults.
 
 ---
 
-## 5. Risk Engine — Design vs Implementation
+## 5. Risk Engine — What the Code Actually Enforces
 
-The risk engine is the project's most reusable asset. The internal design tally grew to **17 layers by V12.4** (per `docs/CHANGELOG.md`); an independent source inspection of `src/` verified the substantive mechanisms below. The `Status` column records what the code actually does — deliberately more conservative than the changelog.
+Two documentation sources once quoted different counts for this engine (13 layers in `GE_SYSTEM_FRAMEWORK.md`, 17 in `CHANGELOG.md`). Neither is derived from the code. The tables below are built by **call-site analysis**: a mechanism counts as **live** only if it is reachable from the engine's main loop (`engine.rs`), directly or through `risk.rs::assess`.
 
-| # | Mechanism | Trigger / Rule | Source (verified) | Status |
-|--:|:--|:--|:--|:--|
-| 0 | **Cubic3 price skew** (dead-zone) | `skew = max_skew × ((ratio−dz)/(1−dz))³`, tick-discretized | `risk.rs::cubic_skew` | ✅ |
-| 1 | **Quadratic2 asymmetric qty** | `qty ∝ 1 − ratio²`, min-lot guarded | `risk.rs::asymmetric_qty_guarded` | ✅ |
-| 2 | **Adaptive IOC shedding** | ≥ `shed_trigger` (90%) → IOC loop, re-entry at 70% | `risk.rs::shed_check` → `engine.rs` `State::Shedding` | ✅ |
-| 3 | **Cycle jitter / rate-limit spacing** | 600 ms between API calls; ±20% cycle jitter | `engine.rs::rate_limit_delay`, `cfg.cycle_jitter` | ✅ |
-| 4 | **Passive unwind watermark** | watermark + hysteresis → PASSIVE_UNWIND | `engine.rs` unwind path, `state.rs` | ✅ |
-| 5 | **Portfolio hard limit** | aggregate over limit → block new risk (reduce-only) | `engine.rs` `portfolio_over_limit` (V12.4) | ✅ |
-| 6 | **Reserve floor** | `withdrawable < min_reserve` → wait/cooldown | `risk.rs::has_reserve` → `engine.rs` | ✅ (narrow) |
-| 7 | **Circuit breaker** | N API failures → trip + halt | — | ❌ *comment-only* (`executor.rs` doc says "with circuit breaker"; struct has no breaker field) |
-| 8 | **Dynamic position cap** | `min(base, cap / vol_multiplier)` | `volatility` field exists but is written as `0.0` | ⚠️ not wired |
-| 9 | **Liquidation defense** | direction-aware distance < 8% | — | ❌ *design only* (`Liquidation Defense` appears only in `CHANGELOG.md`) |
-| 10 | **Dust filter** | position < $20 | — | ❌ *design only* |
-| 11 | **Anti-ping-pong / directional freeze** | flip hysteresis + freeze timer | `state.rs` `freeze_remaining`, `last_flip_cycle` | ✅ |
-| 12 | **GTC last-resort** | zero-fill IOC rounds → GTC escape | `engine.rs` + `executor.rs` | ✅ |
+**Live — reachable from the engine loop (14 mechanisms):**
 
-**Verified tally: 9 implemented, 1 partial, 3 design/comment-only.** "Layer 6 / rescue floor" counts as implemented but is narrower than the changelog's "kill switch" (it does not perform a forced liquidation + halt).
+| # | Mechanism | Reached via | Source |
+|--:|:--|:--|:--|
+| 1 | Cubic³ price skew (dead-zone) | `assess` → `cubic_skew` | `risk.rs` |
+| 2 | Tick discretization of skew | `assess` → `tick_discretized_skew` | `risk.rs` |
+| 3 | Quadratic² asymmetric qty + min-lot guard | `assess` → `asymmetric_qty_guarded` | `risk.rs` |
+| 4 | Adaptive IOC shedding | `assess` → `should_shed` → `State::Shedding` | `risk.rs::shed_check`, `shed_safe` |
+| 5 | Passive unwind | `engine.rs` → `unwind_check`, `unwind_safe` | `risk.rs` |
+| 6 | Reserve floor | `engine.rs` → `has_reserve` (×4) | `risk.rs` |
+| 7 | Portfolio hard limit | `engine.rs` → `portfolio_under_limit` | `risk.rs` |
+| 8 | Flip-rate brake | `engine.rs` → `check_flip_brake` | `state.rs` |
+| 9 | Gate blocking | `engine.rs` → `enter_gate_blocked` / `is_gate_blocked` | `state.rs` |
+| 10 | Waiting hysteresis | `engine.rs` → `enter_waiting` / `tick_waiting` | `state.rs` |
+| 11 | Cold-start ramp | `engine.rs` → `advance_cold_start` | `state.rs` |
+| 12 | Cooldown | `engine.rs` → `cooldown_done` | `state.rs` |
+| 13 | Post-unwind cooldown | `engine.rs` → `unwind_cooldown_left` / `reset_unwind_cooldown` | `state.rs` |
+| 14 | Fill tallies / side tracking | `engine.rs` → `tally_*`, `record_fill_side` | `state.rs` |
 
-### 5.1 Gate priority chain — exactly 6 tiers
+**Defined but unreachable — dead methods (10):**
+
+| Method | File | Note |
+|:--|:--|:--|
+| `is_profitable_spread` | `risk.rs` | no call sites (superseded by the THIN_SPREAD gate) |
+| `is_shedding` | `state.rs` | no call sites |
+| `record_flip`, `set_freeze`, `is_frozen`, `freeze_direction_for` | `state.rs` | **directional freeze was removed in V12.6** — `engine.rs` says so inline; only `tick_freeze` remains wired as a no-op tick |
+| `toxicity_blocked_side`, `reset_toxicity` | `state.rs` | fill-side capture still runs, but the consumer is dead |
+| `buy_side_tapped_out`, `sell_side_tapped_out` | `state.rs` | tallies are still recorded; the side-cap check is never called |
+
+> **On the earlier "9 implemented" figure:** that number came from filtering the changelog's layer list, not from the code. The call-site-derived result is **14 live + 10 dead**. Both framings are defensible, but only the second is reproducible — so the README now uses it. Note also that `engine.rs` itself carries **inline** risk logic (e.g. `INDIVIDUAL_COIN_CAP = 0.20`, the `freeze_buy`/`freeze_sell` guards, the THIN_SPREAD gate) that is *not* in `risk.rs`/`state.rs` and is therefore outside this table.
+
+### 5.1 Gate priority chain — 6 tiers (string-typed, not an enum)
 
 The gate is a single `if / else if` chain in `engine.rs` (≈ line 325). It resolves to one of six mutually exclusive modes, checked in this order:
 
@@ -237,7 +250,9 @@ The gate is a single `if / else if` chain in `engine.rs` (≈ line 325). It reso
 | 5 | **SNIPER** | `ticks ≥ gate_block_ticks` (0) | 0.4 |
 | 6 | **BLOCKED** | otherwise | 0.0 (blocked) |
 
-So the chain has **6 tiers** (not 13, and not 9 — those counts belong to the *risk* mechanisms). The **THIN_SPREAD** tier is the economic conscience: it makes the engine *physically unable* to quote at a negative net spread.
+**They are string literals, not a Rust enum.** `gate_mode` is typed `String` (`state.rs:149`, `engine.rs:54`), and the six modes are produced as literals in the gate expression itself (`engine.rs:330, 346, 357, 365, 367, 369`). The only `enum` in that area is the unrelated `SettlementMode` (in `traits.rs`). Code elsewhere compares `gate == "COARSE"`, so a typo in any literal would silently change routing. *(Design smell worth noting: a `GateMode` enum would make the six states exhaustive and typo-proof.)*
+
+So the chain has **6 tiers** — a different dimension from the risk-mechanism count in the table above. The **THIN_SPREAD** tier is the economic conscience: it makes the engine *physically unable* to quote at a negative net spread.
 
 ---
 
@@ -359,16 +374,16 @@ cargo build --release   # RUSTFLAGS="-D warnings" for CI parity
 
 ```
 growth-engine/
-├── src/                    6,621 LOC Rust
-│   ├── engine.rs           main loop + gate chain (1,316)
-│   ├── risk.rs             risk engine + skew/qty math (399)
-│   ├── state.rs            per-coin FSM (477)
-│   ├── executor.rs         REST + circuit breaker (610)
-│   ├── signer.rs           EIP-712 bridge (271)
-│   ├── levels.rs           multi-level grid (125)
+├── src/                    6,621 LOC Rust (15 modules)
+│   ├── engine.rs           main loop + 6-tier gate chain (1,465)
+│   ├── risk.rs             risk engine: skew / qty / unwind / reserve (398)
+│   ├── state.rs            per-coin FSM + guard predicates (558)
+│   ├── executor.rs         REST client + nonce + order placement (703)
+│   ├── signer.rs           EIP-712 bridge to scripts/hl_sign.py (282)
+│   ├── levels.rs           multi-level quote grid (148)
 │   ├── ws.rs / order_book.rs / types.rs   data layer
-│   └── sniper/mod.rs       toxic-flow taker module (866)
-├── scripts/                signing, scanners, labeller
+│   └── sniper/mod.rs       toxic-flow detection module (1,045)
+├── scripts/                signing, scanners, labeller, loc.py, bench_*.py
 ├── data/                   labels.csv (24,809 rows) + scan results
 ├── docs/                   15 documents — architecture, risk, state machine, postmortem
 └── .github/workflows/      CI pipeline
