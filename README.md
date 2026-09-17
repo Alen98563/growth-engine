@@ -1,13 +1,13 @@
 # Growth Engine
 
-**A production-grade Rust market-making engine for Hyperliquid HIP-3 perpetuals — with a rigorous, data-anchored profitability model for low-fee / rebate regimes.**
+**A Rust market-making engine for Hyperliquid HIP-3 perpetuals — with a data-anchored profitability model and an honest account of what was measured vs modelled.**
 
 [![Rust](https://img.shields.io/badge/Rust-1.70%2B-000?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Architecture](https://img.shields.io/badge/architecture-3--layer%20%2B%2013%20defense%20layers-7c3aed)](#architecture)
 [![Status](https://img.shields.io/badge/status-dormant%20%C2%B7%20revive--ready-amber)](#revive-conditions)
 
-> **TL;DR —** Growth Engine is a complete, battle-tested market-making system (5,760 LOC Rust + 1,477 LOC Python, 18 commits, 13 defense layers). Its economics are governed by **one variable**: the maker fee. Below ~1.5 bps of maker cost the engine has a **structural, positive-expectancy edge**. On **$1,000,000 of capital** at a conservative 6× daily turnover with a Tier-3 maker rebate, the model yields **≈ $613,000 / year (61.3% return on capital)**. The engine is deployed, audited, and waiting for that regime.
+> **TL;DR —** Growth Engine is a complete, deployed market-making system (6,636 LOC Rust + 2,215 LOC Python, 22 commits, a multi-layer risk engine — 9 mechanisms verified implemented in the core). Its economics are governed by **one variable**: the maker fee. Below ~1.5 bps of maker cost the engine has a **structural, positive-expectancy edge**. On **$1,000,000 of capital** at a conservative 6× daily turnover with a Tier-3 maker rebate, the model yields **≈ $613,000 / year (61.3% return on capital)** — a *modelled* figure, not a live result (see §2.7). The engine is deployed, audited, and waiting for that regime.
 
 ---
 
@@ -114,6 +114,29 @@ Tier-0 **standard** maker fee is 1.5 bps → on coarse-tick coins the engine sat
 
 The base case needs **$6M/day** of maker volume. GE's own scanner measured **$19.8M/day** of addressable volume across just **10 qualifying names**, i.e. the base case implies **~30% share of the scanned universe** — a large but not implausible footprint, and it scales linearly with the coin universe (169 coins passed the volume gate in the same scan).
 
+### 2.7 What is *modelled* vs what was *measured* — read this before quoting §2
+
+Everything in §2 is a **model**, parameterised from real market data. It is not a backtest and it is not a live P&L. The distinction matters, so here it is explicitly:
+
+| Claim | Basis | Type |
+|:--|:--|:--|
+| Fee schedule (1.5 / 0.167 / −0.3 bps …) | Hyperliquid published schedule | **fact** |
+| Spread universe (5–53 bps, 10 coins) | GE's own v5 scanner, live | **measured** |
+| 24,809-row tick-level label dataset | GE's labeler, 62 h live | **measured** |
+| Net edge per fill (2.80 bps) | derived from the above | **model** |
+| Annual P&L ($613k on $1M) | model × turnover assumption | **model** |
+
+**And the one real live-P&L datapoint that exists** — a ~10-hour V12.4 run on three coins (see `docs/pnl_3coin_analysis_2026-06-23.md`), on a **$137 account**:
+
+| Coin | Median spread | Direction flips | Notional churn | P&L |
+|:--|--:|--:|--:|--:|
+| HMSTR | 55 bps | 7 | $110 | **+$0.83** |
+| MEME | 18.3 bps | 6 | $262 | **+$0.61** |
+| RESOLV | 18.0 bps | **41** | $4,279 | **−$5.89** |
+| **Total** | | | $4,651 | **−$4.45** (equity −6.4%) |
+
+The engine made small positive spread income on the two wide-spread names and lost on the fine-tick name where 41 direction flips generated a churn tax larger than the spread income. **The code was not the problem — the fee regime plus market-selection were.** This is the honest empirical baseline, and it is exactly why the profitability model in §2 is framed around fees rather than around the engine.
+
 ---
 
 ## 3. Revive Conditions
@@ -133,7 +156,7 @@ When **condition 1 or 2** flips, the model in §2 becomes live and the expected 
 
 ## 4. Architecture
 
-A deliberately small, auditable surface: **three layers, one state machine, thirteen defense layers.**
+A deliberately small, auditable surface: **three layers, one state machine, one risk engine.**
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -144,7 +167,7 @@ A deliberately small, auditable surface: **three layers, one state machine, thir
       ┌────────▼─────────┐           ┌─────────▼──────────────────────────┐
       │   DATA LAYER     │           │          LOGIC LAYER               │
       │                  │ Shared    │                                    │
-      │  ws.rs           │ State     │  risk.rs     ── 13 defense layers  │
+      │  ws.rs           │ State     │  risk.rs     ── risk engine       │
       │  order_book.rs   ├──────────►│  state.rs    ── per-coin 7-state FSM│
       │  types.rs        │ Arc<RwLock│  levels.rs   ── multi-level grid   │
       └──────────────────┘           └─────────┬──────────────────────────┘
@@ -168,7 +191,7 @@ A deliberately small, auditable surface: **three layers, one state machine, thir
 - **`types.rs`** — `SignalBus: Arc<RwLock<HashMap<String, L2Book>>>` — the single thread-safe hand-off between the WS task (writer) and the engine task (reader).
 
 ### 4.2 Logic layer
-- **`risk.rs`** — the 13-layer defense engine (see §5).
+- **`risk.rs`** — the risk engine: cubic skew, asymmetric sizing, reserve floor (see §5).
 - **`state.rs`** — per-coin finite state machine with hysteresis and anti-ping-pong.
 - **`levels.rs`** — multi-level quote grid with drift detection and per-level lifecycle.
 
@@ -179,25 +202,27 @@ A deliberately small, auditable surface: **three layers, one state machine, thir
 
 ---
 
-## 5. Risk Engine — 13 Defense Layers
+## 5. Risk Engine — Design vs Implementation
 
-The engine's most reusable asset. Each layer is independent, testable, and enforced in a fixed priority chain.
+The risk engine is the project's most reusable asset. The internal design tally grew to **17 layers by V12.4** (per `docs/CHANGELOG.md`); an independent source inspection of `src/` found **9 clearly implemented**, 2 partial, 2 design-only among the substantive mechanisms listed below. The `Status` column records the verified state — this is deliberately more conservative than the changelog.
 
-| # | Layer | Trigger / Rule | Action |
+| # | Layer | Trigger / Rule | Status |
 |--:|:--|:--|:--|
-| 0 | **Cubic3 price skew** | `skew ∝ position_ratio³`, tick-discretized | widens the accumulating side, tightens the reducing side |
-| 1 | **Quadratic2 asymmetric qty** | `qty ∝ 1 − ratio²`, min-lot guarded | shrinks the side that is adding risk |
-| 2 | **Adaptive IOC shedding** | ≥ 90% of hard limit | IOC-flatten the excess |
-| 3 | **Rate-limit jitter** | per-cycle request budget | randomized spacing, avoids 429 cascades |
-| 4 | **Passive unwind watermark** | ≥ 40% of hard limit, 20% hysteresis band | passive unwind (maker-first) |
-| 5 | **Portfolio hard limit** | ≥ 40% of equity notional | block new risk; reduce-only mode |
-| 6 | **Kill switch** | withdrawable < $80 | cancel-all + IOC liquidate + halt |
-| 7 | **Circuit breaker** | 3 API failures in 5s | trip and halt, auto-recover |
-| 8 | **Dynamic position cap** | `min(base, cap / vol_multiplier)` | volatility-aware exposure ceiling |
-| 9 | **Liquidation defense** | direction-aware distance < 8% | forced de-risk |
-| 10 | **Dust filter** | position < $20 | excluded from risk math |
-| 11 | **Anti-ping-pong** | 60s post-unwind timer | suppress BUY after unwind |
-| 12 | **GTC last-resort** | 3 zero-fill IOC rounds | 95%-of-bid GTC escape hatch |
+| 0 | **Cubic3 price skew** | `skew ∝ position_ratio³`, tick-discretized | ✅ `risk.rs::cubic_skew` |
+| 1 | **Quadratic2 asymmetric qty** | `qty ∝ 1 − ratio²`, min-lot guarded | ✅ `risk.rs::asymmetric_qty_guarded` |
+| 2 | **Adaptive IOC shedding** | ≥ 90% of hard limit | ✅ `engine.rs` shed path |
+| 3 | **Rate-limit jitter** | per-cycle request budget | ✅ 600 ms intra-cycle spacing |
+| 4 | **Passive unwind watermark** | ≥ 40% of hard limit, hysteresis band | ✅ `state.rs` PASSIVE_UNWIND |
+| 5 | **Portfolio hard limit** | ≥ 40% of equity notional | ✅ `portfolio_reduce` gate (V12.4) |
+| 6 | **Reserve floor** | withdrawable < `min_reserve` | ✅ `risk.rs::has_reserve` (simplified kill switch) |
+| 7 | **Circuit breaker** | N API failures → trip + halt | ⚠️ referenced in `executor.rs`, recovery path partial |
+| 8 | **Dynamic position cap** | `min(base, cap / vol_multiplier)` | ⚠️ config present; volatility input not wired |
+| 9 | **Liquidation defense** | direction-aware distance < 8% | ❌ design only |
+| 10 | **Dust filter** | position < $20 | ❌ design only |
+| 11 | **Anti-ping-pong / directional freeze** | post-unwind timer + flip hysteresis | ✅ `state.rs` freeze + flip brake |
+| 12 | **GTC last-resort** | zero-fill IOC rounds → GTC escape | ✅ `engine.rs` + `executor.rs` |
+
+<!-- legend: ✅ implemented · ⚠️ partial · ❌ design only -->
 
 ### 5.1 State machine (per coin)
 
@@ -217,14 +242,28 @@ The **THIN_SPREAD** gate is the economic conscience of the system: it blocks any
 
 ## 6. Engineering Highlights
 
-- **5,760 LOC Rust** across 15 modules, `#![deny(warnings)]`-clean, `cargo fmt` + `clippy` enforced in CI (`.github/workflows/ci.yml`).
-- **1,477 LOC Python** — signing bridge, 4-stage funnel scanner, counterfactual labeller, test harness.
+- **6,636 LOC Rust** across 15 modules, calibrated by `cargo fmt` + `clippy -D warnings` + 18 unit tests, all enforced in CI (`.github/workflows/ci.yml`).
+- **2,215 LOC Python** (live) — signing bridge, 4-stage funnel scanner, counterfactual labeller, test harness. Plus 2,114 LOC of archived one-off patches under `archive/`.
 - **24,809-row tick-level label dataset** (`data/labels.csv`) — every engine cycle logged with spread, skew, volatility, position ratio, and quote state.
 - **4-stage funnel scanner** — Volume → Velocity → Depth → Coarse-sort across the full perp universe (169 coins passed the volume gate).
-- **18 commits, 6 release tags** (`v4-scanner` → `v12.2-hotfix-freeze`), each mapped to a concrete production incident.
+- **22 commits, 6 release tags** (`v4-scanner` → `v12.2-hotfix-freeze`), each mapped to a concrete production incident.
 - **Zero cloud dependency** — single binary + Python signing subprocess.
 
-### 6.1 Measured microstructure (real, not illustrative)
+### 6.1 Latency profile — stated honestly
+
+This is a **3–5 second cycle market maker, not a latency-sensitive/HFT system**, and no latency distribution has been measured. What the code actually says:
+
+| Path | Figure | Source |
+|:--|:--|:--|
+| Engine cycle | **3–5 s** | `engine.rs` loop design |
+| Intra-cycle API spacing | **600 ms** (≤2 req/s) | `engine.rs` rate-limit guard |
+| Python EIP-712 signing subprocess | **~75 ms** per call | design estimate, not measured |
+| OBI computation tick | 50 ms | `sniper/mod.rs` |
+| Toxic-flow detection tick | 500 ms | `sniper/mod.rs` |
+
+**No p50/p99, no RTT distribution, no µs-level measurement exists in this repository.** The WS data path is event-driven, but the order path is dominated by the multi-second cycle. Any latency number beyond the above would be invented.
+
+### 6.2 Measured microstructure (real, not illustrative)
 
 From GE's own 62-hour label pipeline:
 
@@ -303,9 +342,9 @@ cargo build --release   # RUSTFLAGS="-D warnings" for CI parity
 
 ```
 growth-engine/
-├── src/                    5,760 LOC Rust
+├── src/                    6,636 LOC Rust
 │   ├── engine.rs           main loop + gate chain (1,316)
-│   ├── risk.rs             13 defense layers (357)
+│   ├── risk.rs             risk engine + skew/qty math (399)
 │   ├── state.rs            per-coin FSM (477)
 │   ├── executor.rs         REST + circuit breaker (610)
 │   ├── signer.rs           EIP-712 bridge (271)
