@@ -39,8 +39,9 @@ pub enum InstType {
 }
 
 impl InstType {
-    /// Parse order type from exchange wire format ("Limit", "StopMarket", etc.).
-    pub fn from_str(s: &str) -> Option<Self> {
+    /// Parse instrument type from exchange wire format ("Limit", "StopMarket", etc.).
+    #[allow(dead_code)] // retained for adapter implementations
+    pub fn from_wire(s: &str) -> Option<Self> {
         match s.to_uppercase().as_str() {
             "SPOT" => Some(Self::Spot),
             "SWAP" | "PERP" | "PERPETUAL" => Some(Self::Swap),
@@ -174,7 +175,7 @@ pub trait StateMachine: Sized {
         if self.can_transition_to(&next) {
             Ok(next)
         } else {
-            Err(format!("invalid transition"))
+            Err("invalid transition".to_string())
         }
     }
 

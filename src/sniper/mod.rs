@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::executor::Executor;
-use crate::types::{self, L2Book, MarketShockSignal, SignalBus};
+use crate::types::{L2Book, SignalBus};
 use anyhow::Result;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -32,7 +32,9 @@ const WHALE_STATE_PATH: &str = "/tmp/whale_sense_state.json";
 const SNIPER_STATE_PATH: &str = "/tmp/sniper_state.json";
 
 /// Data freshness TTL (consistent with pgn_engine_v2 30s cycle + margin)
+#[allow(dead_code)] // reserved: file-bridge freshness gate
 const WHALE_TTL_S: u64 = 120;
+#[allow(dead_code)] // reserved: file-bridge freshness gate
 const SNIPER_STATE_TTL_S: u64 = 120;
 
 /// Detection thresholds
@@ -45,7 +47,9 @@ const QUOTE_STUFFING_RATE: usize = 50; // >50 L2 updates/sec for >1s
 const QUOTE_STUFFING_DURATION_S: u64 = 1;
 const OBI_THRESHOLD: f64 = 0.5;
 const OBI_DELTA_THRESHOLD: f64 = 0.15; // per 100ms
+#[allow(dead_code)] // reserved: pre-position tick offset
 const PRE_POSITION_TICKS: u32 = 2;
+#[allow(dead_code)] // reserved: pre-position order TTL
 const PRE_POSITION_TTL_MS: u64 = 100;
 const OBI_CYCLE_MS: u64 = 50;
 
@@ -97,8 +101,11 @@ pub struct WhaleSnapshot {
     pub fetched_at: u64,
 }
 
+/// A single trade observed on the wire. Fields are populated for every
+/// event so the detector can support future signals without a schema change.
 #[derive(Debug, Clone)]
-struct FillRecord {
+#[allow(dead_code)]
+pub struct FillRecord {
     coin: String,
     side: String,
     sz: f64,
@@ -106,8 +113,11 @@ struct FillRecord {
     ts_ms: u64,
 }
 
+/// A point-in-time L2 book summary. `mid_px` / `spread_bps` are retained
+/// for OBI diagnostics and future spread-aware scoring.
 #[derive(Debug, Clone)]
-struct L2Snapshot {
+#[allow(dead_code)]
+pub struct L2Snapshot {
     coin: String,
     bid_depth: f64,
     ask_depth: f64,
@@ -244,6 +254,12 @@ pub struct ToxicFlowDetector {
     last_whale_load: Instant,
 }
 
+impl Default for ToxicFlowDetector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToxicFlowDetector {
     pub fn new() -> Self {
         Self {
@@ -345,7 +361,7 @@ impl ToxicFlowDetector {
         let buys = recent.iter().filter(|f| f.side == "BUY").count();
         let skew = buys as f64 / recent.len() as f64;
 
-        if skew > FILL_BURST_SKEW || skew < (1.0 - FILL_BURST_SKEW) {
+        if !((1.0 - FILL_BURST_SKEW)..=FILL_BURST_SKEW).contains(&skew) {
             let attack_side = if skew > FILL_BURST_SKEW {
                 "BUY"
             } else {
@@ -636,10 +652,17 @@ pub struct FrontrunController {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // ts_ms / coin retained for time-windowed OBI series
 struct ObiPoint {
     ts_ms: u64,
     obi: f64,
     coin: String,
+}
+
+impl Default for FrontrunController {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FrontrunController {
@@ -805,6 +828,12 @@ pub enum SniperAction {
 pub struct EvacuationPipeline {
     /// Per-coin evacuation state
     states: HashMap<String, EvacuationLevel>,
+}
+
+impl Default for EvacuationPipeline {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl EvacuationPipeline {

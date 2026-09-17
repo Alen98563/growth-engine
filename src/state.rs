@@ -155,6 +155,12 @@ pub struct PerCoinState {
     pub waiting_reason: String,
 }
 
+impl Default for PerCoinState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PerCoinState {
     /// Create a new per-coin state machine in Idle state.
     pub fn new() -> Self {
@@ -224,6 +230,12 @@ pub struct CoinStateMachine {
     cooldown_duration_secs: f64,
 }
 
+impl Default for CoinStateMachine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CoinStateMachine {
     /// Create a new coin state registry (manages all coins).
     pub fn new() -> Self {
@@ -243,9 +255,7 @@ impl CoinStateMachine {
 
     /// Get or initialize state for a coin.
     pub(crate) fn get_or_init(&mut self, coin: &str) -> &mut PerCoinState {
-        self.coins
-            .entry(coin.to_string())
-            .or_insert_with(PerCoinState::new)
+        self.coins.entry(coin.to_string()).or_default()
     }
 
     /// Current state for a coin (Idle if never seen).
@@ -300,7 +310,7 @@ impl CoinStateMachine {
     pub fn is_gate_blocked(&self, coin: &str) -> bool {
         self.coins
             .get(coin)
-            .map_or(false, |cs| cs.state == State::GateBlocked)
+            .is_some_and(|cs| cs.state == State::GateBlocked)
     }
 
     /// Transition to Waiting with a human-readable reason.
@@ -438,14 +448,14 @@ impl CoinStateMachine {
     pub fn buy_side_tapped_out(&self, coin: &str, max_fills: u32) -> bool {
         self.coins
             .get(coin)
-            .map_or(false, |cs| cs.buy_fills_tally >= max_fills)
+            .is_some_and(|cs| cs.buy_fills_tally >= max_fills)
     }
 
     /// Check if sell side should be stopped (COARSE mode sensitive skew).
     pub fn sell_side_tapped_out(&self, coin: &str, max_fills: u32) -> bool {
         self.coins
             .get(coin)
-            .map_or(false, |cs| cs.sell_fills_tally >= max_fills)
+            .is_some_and(|cs| cs.sell_fills_tally >= max_fills)
     }
 
     // ── V8 Flip Hysteresis: prevent directional whiplash ──
@@ -456,7 +466,7 @@ impl CoinStateMachine {
         let cs = self.get_or_init(coin);
         cs.flip_brake_cycle += 1;
         // Shift window: keep only last 100 cycles
-        if cs.flip_brake_cycle % 100 == 0 {
+        if cs.flip_brake_cycle.is_multiple_of(100) {
             cs.recent_flips = 0;
         }
         // Count ones in window (max 100)

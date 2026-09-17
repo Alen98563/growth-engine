@@ -85,6 +85,7 @@ impl Signer {
     ///
     /// Calls `python3 hl_sign.py order --private-key ... --coin ... --is-buy ...`
     /// and parses the JSON output.
+    #[allow(clippy::too_many_arguments)]
     pub fn sign_l1_order(
         &self,
         coin: &str,
@@ -226,15 +227,14 @@ pub struct SignedAction {
     pub action_type: String,
 }
 
-/// EIP-712 signing recipe for Hyperliquid.
-///
-/// The Python SDK's `sign_l1_action` handles the full chain:
-///   action_dict → msgpack → keccak256 → phantom_agent → EIP-712 typed data → ECDSA
-///
-/// DO NOT reimplement this in Rust. Keep `scripts/hl_sign.py` as the
-/// single source of truth for byte-perfect signature generation.
 pub mod recipes {
     //! # EIP-712 Signing Recipe (reference only)
+    //!
+    //! The Python SDK's `sign_l1_action` handles the full chain:
+    //! `action_dict -> msgpack -> keccak256 -> phantom_agent -> EIP-712 typed data -> ECDSA`.
+    //!
+    //! **DO NOT reimplement this in Rust.** Keep `scripts/hl_sign.py` as the
+    //! single source of truth for byte-perfect signature generation.
     //!
     //! ## Nonce
     //! The nonce is the current timestamp in **milliseconds** (matches

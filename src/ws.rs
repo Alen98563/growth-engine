@@ -16,6 +16,7 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
+#[allow(dead_code)] // documents the concrete WebSocket stream type
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// Rolling window duration for toxic burst detection (seconds).

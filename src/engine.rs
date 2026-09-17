@@ -177,7 +177,7 @@ pub async fn run<A: MarketAdapter>(
 
             let book_stale = {
                 let books = bus.books.read();
-                books.get(coin).map_or(true, |b| {
+                books.get(coin).is_none_or(|b| {
                     b.best_bid().is_none() || b.timestamp < now_ms.saturating_sub(10_000)
                 })
             };
@@ -188,7 +188,7 @@ pub async fn run<A: MarketAdapter>(
                 match adapter.fetch_l2(coin).await {
                     Ok(b) => {
                         let mut books = bus.books.write();
-                        let still_stale = books.get(coin).map_or(true, |existing| {
+                        let still_stale = books.get(coin).is_none_or(|existing| {
                             existing.timestamp < now_ms.saturating_sub(10_000)
                         });
                         if still_stale {

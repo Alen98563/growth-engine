@@ -211,7 +211,7 @@ impl Executor {
                         return Ok(OrderOutcome::Rested(oid));
                     }
                 }
-                if let Some(filled) = &status.get("filled") {
+                if let Some(_filled) = &status.get("filled") {
                     return Ok(OrderOutcome::FilledTaker);
                 }
                 if let Some(error) = status.get("error").and_then(|v| v.as_str()) {
@@ -349,7 +349,7 @@ impl Executor {
                         return Ok(OrderOutcome::Rested(oid));
                     }
                 }
-                if let Some(filled) = &status.get("filled") {
+                if let Some(_filled) = &status.get("filled") {
                     return Ok(OrderOutcome::FilledTaker);
                 }
                 if let Some(error) = status.get("error").and_then(|v| v.as_str()) {
@@ -385,7 +385,7 @@ impl Executor {
             .json(&body)
             .send()
             .await?;
-        let data: serde_json::Value = resp.json().await?;
+        let _data: serde_json::Value = resp.json().await?;
 
         Ok(())
     }
@@ -399,6 +399,7 @@ impl Executor {
     ///
     /// Max retreat attempts: `unwind_max_retreat_ticks` (default 3).
     /// Returns the OID on success, or None after exhausting retreats.
+    #[allow(clippy::too_many_arguments)]
     pub async fn place_limit_order_with_tick_retreat(
         &self,
         coin: &str,
@@ -520,7 +521,7 @@ impl Executor {
             .json(&body)
             .send()
             .await?;
-        let data: serde_json::Value = resp.json().await?;
+        let _data: serde_json::Value = resp.json().await?;
 
         Ok(())
     }
@@ -655,6 +656,7 @@ impl MarketAdapter for Executor {
 /// If the error format is returned, response is a **string** (not an object),
 /// so `data["response"]["data"]` silently yields None and the error is swallowed.
 /// This function detects both paths and returns the statuses array (or None).
+#[allow(dead_code)] // reference implementation retained for documentation
 fn extract_statuses(data: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
     // Check for top-level error format first
     if data.get("status").and_then(|v| v.as_str()) == Some("err") {
