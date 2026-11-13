@@ -11,6 +11,36 @@
 
 ---
 
+## 0. Verify it yourself — three commands, no keys, no network
+
+This repository ships an **offline replay** sub-command. It needs no API key, makes no network call, and does not construct a signer. Clone and run:
+
+```bash
+git clone https://github.com/Alen98563/growth-engine.git && cd growth-engine
+cargo build --release
+./target/release/growth-engine replay \
+    --tape data/labels_public.csv \
+    --out  demo/index.html
+```
+
+That is the whole demo. `data/labels_public.csv` is the **live 24,809-row tape** from the archived run (62 hours, 5 coins, one row per engine cycle, 17 columns). The replay rebuilds the `L2Book` from the recorded mid and spread, rebuilds the `AccountState` from the recorded equity, withdrawable and position, then calls the **same `RiskEngine::assess()`** the live loop called — no simulation of the risk math, the actual code.
+
+What it measures, and what it deliberately does not:
+
+| Metric | Value on this tape | What it means |
+|:--|--:|:--|
+| Quote reproduction, PUMP | **95.1%** | replayed `buy_sz`/`sell_sz` within 1% of the size actually placed, per side |
+| Quote reproduction, RESOLV | **97.3%** | same test |
+| Quote reproduction, HMSTR / MEME | 25.7% / 63.6% | the coarse-tick state machine (not `risk.rs`) throttles these; reported as-is, not excluded |
+| `assess()` decision latency | **p50 0.13 µs · p99 0.3 µs** | 24,809 timed calls, single-threaded, release build |
+| Determinism | identical byte output across runs | same tape in → same report out |
+
+The P&L panel is labelled **model, not result**: fills are assumed whenever the next mid touches the quote, at the quoted price. A real fill needs a counterparty. The one real live run on this tape **lost money** — $137.65 → $128.88 in ~10 hours (−6.4%), §2.7 above.
+
+`data/labels_public.csv` is the recorded tape with account fields rounded to 3 decimals. It contains **no private key, no wallet address, no exchange credentials** — only market state, engine state and order sizes.
+
+Static report (GitHub Pages): **https://alen98563.github.io/growth-engine/**
+
 ## 1. The Question Everyone Asks
 
 > *"If the fee structure improved — lower maker fees **and** a maker rebate — what would $1M of capital actually earn?"*

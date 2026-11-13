@@ -30,6 +30,7 @@ pub mod executor;
 pub mod labeler;
 pub mod levels;
 pub mod order_book;
+pub mod replay;
 pub mod risk;
 pub mod signer;
 pub mod sniper;
@@ -46,6 +47,11 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if std::env::args().nth(1).as_deref() == Some("replay") {
+        let rest: Vec<String> = std::env::args().skip(2).collect();
+        return replay::run(&rest);
+    }
+
     // Initialize structured logging
     tracing_subscriber::fmt()
         .with_env_filter(
