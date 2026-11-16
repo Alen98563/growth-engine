@@ -68,12 +68,8 @@ impl RiskEngine {
         let mid = (best_bid + best_ask) / 2.0;
 
         // Find position for this coin
-        let position = account
-            .positions
-            .iter()
-            .find(|p| p.coin == coin)
-            .cloned()
-            .unwrap_or_default();
+        let position =
+            account.positions.iter().find(|p| p.coin == coin).cloned().unwrap_or_default();
 
         // ── Compute position metrics ──
         // If withdrawable is negative (leverage), use equity as fallback denominator
@@ -116,11 +112,8 @@ impl RiskEngine {
         let safe_bid = bid_px.min(best_ask - tick * 0.5);
         let safe_ask = ask_px.max(best_bid + tick * 0.5);
         // Only apply clamping if it does not reverse the spread
-        let (bid_px, ask_px) = if safe_bid < safe_ask {
-            (safe_bid, safe_ask)
-        } else {
-            (best_bid, best_ask)
-        };
+        let (bid_px, ask_px) =
+            if safe_bid < safe_ask { (safe_bid, safe_ask) } else { (best_bid, best_ask) };
 
         // ── Path C: Widen by base_spread_ticks (retreat from 1-tick knife fight) ──
         let extra = self.cfg.base_spread_ticks as f64 * tick;
@@ -224,16 +217,9 @@ impl RiskEngine {
         };
 
         // Min-lot guard: if scaled below min, zero out
-        let buy_sz = if raw_buy > 0.0 && raw_buy < self.cfg.min_order_size {
-            0.0
-        } else {
-            raw_buy
-        };
-        let sell_sz = if raw_sell > 0.0 && raw_sell < self.cfg.min_order_size {
-            0.0
-        } else {
-            raw_sell
-        };
+        let buy_sz = if raw_buy > 0.0 && raw_buy < self.cfg.min_order_size { 0.0 } else { raw_buy };
+        let sell_sz =
+            if raw_sell > 0.0 && raw_sell < self.cfg.min_order_size { 0.0 } else { raw_sell };
 
         (buy_sz, sell_sz)
     }

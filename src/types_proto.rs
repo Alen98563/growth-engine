@@ -203,18 +203,12 @@ impl StateMachine for OrderState {
             (self, next),
             (Unspecified, New)
                 | (New, Posted | Rejected)
-                | (
-                    Posted,
-                    PartialFilled | Filled | Canceled | Rejected | Expired | PendingCancel
-                )
+                | (Posted, PartialFilled | Filled | Canceled | Rejected | Expired | PendingCancel)
                 | (
                     PartialFilled,
                     PartialFilled | Filled | PartialCanceled | Canceled | PendingCancel
                 )
-                | (
-                    PendingCancel,
-                    PartialCanceled | Canceled | PartialFilled | Filled
-                )
+                | (PendingCancel, PartialCanceled | Canceled | PartialFilled | Filled)
         )
     }
 
@@ -361,11 +355,7 @@ impl UnifiedOrder {
             is_buy: self.side.is_buy(),
             sz: self.sz_f64(),
             limit_px: self.px_f64(),
-            reduce_only: self
-                .meta
-                .get("reduce_only")
-                .map(|v| v == "true")
-                .unwrap_or(false),
+            reduce_only: self.meta.get("reduce_only").map(|v| v == "true").unwrap_or(false),
             tif: self.order_type.tif_str().to_string(),
             cloid: Some(self.cl_ord_id.clone()),
             order_type: match self.order_type {

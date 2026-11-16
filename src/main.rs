@@ -81,9 +81,7 @@ async fn main() -> Result<()> {
 
     // Labeler: ML fuel pipeline (cycle snapshots → CSV)
     let labeler = labeler::Labeler::new(
-        std::env::var("GE_LABEL_PATH")
-            .unwrap_or_else(|_| "data/labels.csv".to_string())
-            .into(),
+        std::env::var("GE_LABEL_PATH").unwrap_or_else(|_| "data/labels.csv".to_string()).into(),
     );
 
     // Spawn WebSocket task (receives cloned bus with shock_tx)

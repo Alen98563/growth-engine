@@ -127,12 +127,7 @@ pub struct L2Book {
 impl L2Book {
     /// Create a new L2 book for the given asset.
     pub fn new(coin: Asset) -> Self {
-        Self {
-            coin,
-            bids: Vec::new(),
-            asks: Vec::new(),
-            timestamp: 0,
-        }
+        Self { coin, bids: Vec::new(), asks: Vec::new(), timestamp: 0 }
     }
 
     /// Return the highest bid price, or None if book is empty.
@@ -279,11 +274,7 @@ impl SignalBus {
 
     /// Snapshot of current L2 for a coin.
     pub fn book(&self, coin: &str) -> L2Book {
-        self.books
-            .read()
-            .get(coin)
-            .cloned()
-            .unwrap_or_else(|| L2Book::new(coin.to_string()))
+        self.books.read().get(coin).cloned().unwrap_or_else(|| L2Book::new(coin.to_string()))
     }
 
     /// Snapshot of current account state.

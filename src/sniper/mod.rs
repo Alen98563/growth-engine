@@ -173,30 +173,16 @@ fn load_whale_state() -> HashMap<String, WhaleSnapshot> {
         .as_millis() as u64;
 
     for (coin, obj) in coins {
-        let state = obj
-            .get("state")
-            .and_then(|v| v.as_str())
-            .unwrap_or("随机游走");
-        let score = obj
-            .get("whale_score")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-        let decision = obj
-            .get("decision")
-            .and_then(|v| v.as_str())
-            .unwrap_or("HOLD");
+        let state = obj.get("state").and_then(|v| v.as_str()).unwrap_or("随机游走");
+        let score = obj.get("whale_score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let decision = obj.get("decision").and_then(|v| v.as_str()).unwrap_or("HOLD");
         let direction_bias = parse_direction(decision);
         let z_p = obj.get("z_p").and_then(|v| v.as_f64()).unwrap_or(0.0);
         let z_oi = obj.get("z_oi").and_then(|v| v.as_f64()).unwrap_or(0.0);
         let z_cvd = obj.get("z_cvd").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let active_layers = obj
-            .get("active_layers")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
-        let consecutive_bars = obj
-            .get("consecutive_bars")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
+        let active_layers = obj.get("active_layers").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let consecutive_bars =
+            obj.get("consecutive_bars").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
         let price = obj.get("price").and_then(|v| v.as_f64()).unwrap_or(0.0);
 
         out.insert(
@@ -300,23 +286,19 @@ impl ToxicFlowDetector {
     /// Main detection pipeline: evaluate all 4 detection modes for a coin.
     pub fn detect(&self, coin: &str, now_ms: u64) -> Vec<ToxicFlowEvent> {
         let mut events = Vec::new();
-        let whale = self
-            .whale_cache
-            .get(coin)
-            .cloned()
-            .unwrap_or(WhaleSnapshot {
-                state: "随机游走".into(),
-                score: 0.0,
-                decision: "HOLD".into(),
-                direction_bias: None,
-                z_p: 0.0,
-                z_oi: 0.0,
-                z_cvd: 0.0,
-                active_layers: 0,
-                consecutive_bars: 0,
-                price: 0.0,
-                fetched_at: now_ms,
-            });
+        let whale = self.whale_cache.get(coin).cloned().unwrap_or(WhaleSnapshot {
+            state: "随机游走".into(),
+            score: 0.0,
+            decision: "HOLD".into(),
+            direction_bias: None,
+            z_p: 0.0,
+            z_oi: 0.0,
+            z_cvd: 0.0,
+            active_layers: 0,
+            consecutive_bars: 0,
+            price: 0.0,
+            fetched_at: now_ms,
+        });
 
         // ── 1. Fill burst detection ──
         if let Some(burst_event) = self.detect_fill_burst(coin, now_ms, &whale) {
@@ -362,11 +344,7 @@ impl ToxicFlowDetector {
         let skew = buys as f64 / recent.len() as f64;
 
         if !((1.0 - FILL_BURST_SKEW)..=FILL_BURST_SKEW).contains(&skew) {
-            let attack_side = if skew > FILL_BURST_SKEW {
-                "BUY"
-            } else {
-                "SELL"
-            };
+            let attack_side = if skew > FILL_BURST_SKEW { "BUY" } else { "SELL" };
             let severity = calculate_severity(60, whale);
             return Some(ToxicFlowEvent {
                 kind: ToxicEventKind::FillBurst,
@@ -579,26 +557,14 @@ impl OBIStream {
             .iter()
             .take(self.depth)
             .enumerate()
-            .map(|(i, l)| {
-                if self.weighted {
-                    l.sz / (i + 1) as f64
-                } else {
-                    l.sz
-                }
-            })
+            .map(|(i, l)| if self.weighted { l.sz / (i + 1) as f64 } else { l.sz })
             .sum();
         let ask_sum: f64 = book
             .asks
             .iter()
             .take(self.depth)
             .enumerate()
-            .map(|(i, l)| {
-                if self.weighted {
-                    l.sz / (i + 1) as f64
-                } else {
-                    l.sz
-                }
-            })
+            .map(|(i, l)| if self.weighted { l.sz / (i + 1) as f64 } else { l.sz })
             .sum();
         let total = bid_sum + ask_sum;
         if total == 0.0 {
@@ -612,16 +578,8 @@ impl OBIStream {
     pub fn snapshot(&self, coin: &str, book: &L2Book, now_ms: u64) -> L2Snapshot {
         let best_bid = book.bids.first().map(|l| l.px).unwrap_or(0.0);
         let best_ask = book.asks.first().map(|l| l.px).unwrap_or(0.0);
-        let mid = if best_bid > 0.0 && best_ask > 0.0 {
-            (best_bid + best_ask) / 2.0
-        } else {
-            0.0
-        };
-        let spread_bps = if mid > 0.0 {
-            (best_ask - best_bid) / mid * 10000.0
-        } else {
-            0.0
-        };
+        let mid = if best_bid > 0.0 && best_ask > 0.0 { (best_bid + best_ask) / 2.0 } else { 0.0 };
+        let spread_bps = if mid > 0.0 { (best_ask - best_bid) / mid * 10000.0 } else { 0.0 };
         let bid_depth = book.bids.iter().take(self.depth).map(|l| l.sz).sum();
         let ask_depth = book.asks.iter().take(self.depth).map(|l| l.sz).sum();
 
@@ -667,19 +625,12 @@ impl Default for FrontrunController {
 
 impl FrontrunController {
     pub fn new() -> Self {
-        Self {
-            obi_history: VecDeque::with_capacity(64),
-            state: FrontrunState::Idle,
-        }
+        Self { obi_history: VecDeque::with_capacity(64), state: FrontrunState::Idle }
     }
 
     /// Called each OBI tick (50ms). Returns true if frontrun should activate.
     pub fn tick_obi(&mut self, coin: &str, obi: f64, now_ms: u64) -> bool {
-        self.obi_history.push_back(ObiPoint {
-            ts_ms: now_ms,
-            obi,
-            coin: coin.to_string(),
-        });
+        self.obi_history.push_back(ObiPoint { ts_ms: now_ms, obi, coin: coin.to_string() });
         while self.obi_history.len() > 64 {
             self.obi_history.pop_front();
         }
@@ -780,11 +731,7 @@ impl MicroSniper {
         }
         self.phase = ProbePhase::Sniping;
         let coin = self.current_coin.clone().unwrap_or_default();
-        Some(SniperAction::Snipe {
-            coin,
-            sz: self.snipe_sz,
-            max_hold_ms: 2000,
-        })
+        Some(SniperAction::Snipe { coin, sz: self.snipe_sz, max_hold_ms: 2000 })
     }
 
     /// Probe rejected / timeout → retreat
@@ -810,17 +757,8 @@ impl MicroSniper {
 
 #[derive(Debug, Clone)]
 pub enum SniperAction {
-    Probe {
-        coin: String,
-        direction: String,
-        sz: f64,
-        probe_ttl_ms: u64,
-    },
-    Snipe {
-        coin: String,
-        sz: f64,
-        max_hold_ms: u64,
-    },
+    Probe { coin: String, direction: String, sz: f64, probe_ttl_ms: u64 },
+    Snipe { coin: String, sz: f64, max_hold_ms: u64 },
 }
 
 // ── EvacuationPipeline ────────────────────────────────────
@@ -838,30 +776,19 @@ impl Default for EvacuationPipeline {
 
 impl EvacuationPipeline {
     pub fn new() -> Self {
-        Self {
-            states: HashMap::new(),
-        }
+        Self { states: HashMap::new() }
     }
 
     /// Process a toxic flow event → escalate or update evacuation level.
     /// J directive: max severity wins (concurrent signals don't downgrade).
     pub fn ingest(&mut self, event: &ToxicFlowEvent) -> EvacuationResponse {
-        let current = self
-            .states
-            .get(&event.coin)
-            .copied()
-            .unwrap_or(EvacuationLevel::Monitor);
+        let current = self.states.get(&event.coin).copied().unwrap_or(EvacuationLevel::Monitor);
         let new_level = std::cmp::max(current, event.action);
         self.states.insert(event.coin.clone(), new_level);
 
-        let needs_cancel_all = matches!(
-            new_level,
-            EvacuationLevel::FullEvac | EvacuationLevel::Panic
-        );
-        let needs_hedge = matches!(
-            new_level,
-            EvacuationLevel::Hedge | EvacuationLevel::FullEvac
-        );
+        let needs_cancel_all =
+            matches!(new_level, EvacuationLevel::FullEvac | EvacuationLevel::Panic);
+        let needs_hedge = matches!(new_level, EvacuationLevel::Hedge | EvacuationLevel::FullEvac);
 
         EvacuationResponse {
             coin: event.coin.clone(),

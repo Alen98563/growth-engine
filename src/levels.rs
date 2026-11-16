@@ -58,9 +58,7 @@ pub struct LevelManager {
 impl LevelManager {
     /// Create an empty level manager.
     pub fn new() -> Self {
-        Self {
-            orders: HashMap::new(),
-        }
+        Self { orders: HashMap::new() }
     }
 
     /// Register a placed order at a specific level
@@ -116,28 +114,17 @@ impl LevelManager {
 
     /// Get all active order IDs (for cancellation at shutdown)
     pub fn active_oids(&self) -> Vec<u64> {
-        self.orders
-            .values()
-            .filter(|o| o.state == LevelState::Active)
-            .map(|o| o.oid)
-            .collect()
+        self.orders.values().filter(|o| o.state == LevelState::Active).map(|o| o.oid).collect()
     }
 
     /// Count of currently active orders
     pub fn active_count(&self) -> usize {
-        self.orders
-            .values()
-            .filter(|o| o.state == LevelState::Active)
-            .count()
+        self.orders.values().filter(|o| o.state == LevelState::Active).count()
     }
 
     /// Total notional of active orders (approximate, from placed_sz)
     pub fn active_notional(&self) -> f64 {
-        self.orders
-            .values()
-            .filter(|o| o.state == LevelState::Active)
-            .map(|o| o.placed_sz)
-            .sum()
+        self.orders.values().filter(|o| o.state == LevelState::Active).map(|o| o.placed_sz).sum()
     }
 }
 

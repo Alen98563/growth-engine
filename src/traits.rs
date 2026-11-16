@@ -94,7 +94,12 @@ pub enum SettlementMode {
 /// 4. Wire up `MarketCapabilities`
 /// Zero changes needed in engine / risk / state / decision layers.
 #[async_trait]
-#[allow(clippy::empty_line_after_outer_attr, clippy::too_many_arguments)]
+#[allow(
+    clippy::empty_line_after_outer_attr,
+    clippy::too_many_arguments,
+    // emitted by the async_trait expansion on every `-> Result<..>` method, not by us
+    clippy::double_must_use
+)]
 pub trait MarketAdapter: Send {
     /// ── Identity ──
 

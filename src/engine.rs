@@ -148,10 +148,8 @@ pub async fn run<A: MarketAdapter>(
                 "PORTFOLIO HARD LIMIT: freezing flat coins"
             );
             for c in &cfg.coins {
-                let has_pos = account
-                    .positions
-                    .iter()
-                    .any(|p| &p.coin == c && p.size.abs() > 0.001);
+                let has_pos =
+                    account.positions.iter().any(|p| &p.coin == c && p.size.abs() > 0.001);
                 if matches!(coin_state.state_of(c), State::Active) && !has_pos {
                     coin_state.transition(c, State::Cooldown);
                 }
@@ -267,12 +265,8 @@ pub async fn run<A: MarketAdapter>(
             metrics.withdrawable = account.withdrawable;
             metrics.equity = account.equity;
 
-            let pos = account
-                .positions
-                .iter()
-                .find(|p| &p.coin == coin)
-                .cloned()
-                .unwrap_or_default();
+            let pos =
+                account.positions.iter().find(|p| &p.coin == coin).cloned().unwrap_or_default();
 
             // ── P0+: Detect position changes missed by WS fill events ──
             // P1: When WS misses a fill, gracefully cold-restart the coin
@@ -1160,21 +1154,13 @@ pub async fn run<A: MarketAdapter>(
 
             // ── 7. Label recording ──
             {
-                let pos = account
-                    .positions
-                    .iter()
-                    .find(|p| &p.coin == coin)
-                    .cloned()
-                    .unwrap_or_default();
+                let pos =
+                    account.positions.iter().find(|p| &p.coin == coin).cloned().unwrap_or_default();
                 let book_guard = bus.books.read();
                 let (bid_sz, ask_sz, mid_px) = book_guard
                     .get(coin)
                     .map(|b| {
-                        (
-                            b.total_bid_depth(),
-                            b.total_ask_depth(),
-                            b.mid_price().unwrap_or(0.0),
-                        )
+                        (b.total_bid_depth(), b.total_ask_depth(), b.mid_price().unwrap_or(0.0))
                     })
                     .unwrap_or((0.0, 0.0, 0.0));
                 drop(book_guard);
@@ -1326,9 +1312,7 @@ async fn bootstrap_recovery<A: MarketAdapter>(
         // V12.7: withdrawable safety floor — when HL reports negative withdrawable
         // (leverage/liability state), fall back to equity-based estimate instead of
         // collapsing hard_limit to $1.0 which would lock the engine permanently.
-        let effective_wd = account
-            .withdrawable
-            .max(account.equity * cfg.hard_limit_ratio * 0.5);
+        let effective_wd = account.withdrawable.max(account.equity * cfg.hard_limit_ratio * 0.5);
         let hard_limit = if effective_wd > 0.0 {
             effective_wd * cfg.hard_limit_ratio
         } else {
@@ -1362,9 +1346,8 @@ async fn cancel_active_orders<A: MarketAdapter>(
     coin: &str,
     active_orders: &mut Vec<(String, u64)>,
 ) {
-    let (ours, rest): (Vec<_>, Vec<_>) = std::mem::take(active_orders)
-        .into_iter()
-        .partition(|(c, _)| c == coin);
+    let (ours, rest): (Vec<_>, Vec<_>) =
+        std::mem::take(active_orders).into_iter().partition(|(c, _)| c == coin);
 
     *active_orders = rest;
 

@@ -35,12 +35,7 @@ pub struct Executor {
 impl Executor {
     /// Build a new Executor with config, signer, and circuit breaker.
     pub fn new(cfg: Config, signer: Signer) -> Self {
-        Self {
-            client: Client::new(),
-            cfg,
-            signer,
-            last_nonce: AtomicU64::new(0),
-        }
+        Self { client: Client::new(), cfg, signer, last_nonce: AtomicU64::new(0) }
     }
 
     /// B6: Get next nonce — monotonic even across NTP clock adjustments.
@@ -74,33 +69,22 @@ impl Executor {
             "user": self.cfg.address
         });
 
-        let resp = self
-            .client
-            .post(format!("{}/info", self.cfg.api_url))
-            .json(&body)
-            .send()
-            .await?;
+        let resp =
+            self.client.post(format!("{}/info", self.cfg.api_url)).json(&body).send().await?;
         let data: serde_json::Value = resp.json().await?;
 
         let margin = &data["marginSummary"];
-        let equity = margin["accountValue"]
-            .as_str()
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
+        let equity =
+            margin["accountValue"].as_str().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
 
         // Use totalRawUsd (actual USDC balance) as available capital.
         // The Hyperliquid perps API does not have a "withdrawable" field;
         // it returns "totalRawUsd" (accountValue net of unrealized PnL
         // and margin allocations).
-        let withdrawable = margin["totalRawUsd"]
-            .as_str()
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
+        let withdrawable =
+            margin["totalRawUsd"].as_str().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
 
-        let positions_raw = data["assetPositions"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
+        let positions_raw = data["assetPositions"].as_array().cloned().unwrap_or_default();
         let positions: Vec<Position> = positions_raw
             .iter()
             .filter_map(|p| {
@@ -117,20 +101,11 @@ impl Executor {
                     .and_then(|v| v.as_str())
                     .and_then(|s| s.parse::<f64>().ok())
                     .unwrap_or(0.0);
-                Some(Position {
-                    coin,
-                    size: szi,
-                    entry_px,
-                    unrealized_pnl: upnl,
-                })
+                Some(Position { coin, size: szi, entry_px, unrealized_pnl: upnl })
             })
             .collect();
 
-        Ok(AccountState {
-            withdrawable,
-            equity,
-            positions,
-        })
+        Ok(AccountState { withdrawable, equity, positions })
     }
 
     /// Fetch L2 book snapshot from REST API (fallback when WS is stale).
@@ -140,12 +115,8 @@ impl Executor {
             "coin": coin
         });
 
-        let resp = self
-            .client
-            .post(format!("{}/info", self.cfg.api_url))
-            .json(&body)
-            .send()
-            .await?;
+        let resp =
+            self.client.post(format!("{}/info", self.cfg.api_url)).json(&body).send().await?;
         let data: serde_json::Value = resp.json().await?;
 
         let mut book = L2Book::new(coin.to_string());
@@ -169,8 +140,7 @@ impl Executor {
     ) -> Result<OrderOutcome> {
         let nonce = self.next_nonce();
         let sig =
-            self.signer
-                .sign_l1_order(coin, is_buy, reduce_only, limit_px, sz, nonce, "Alo")?;
+            self.signer.sign_l1_order(coin, is_buy, reduce_only, limit_px, sz, nonce, "Alo")?;
 
         let px_wire = sig.px_str.as_deref().unwrap_or("0");
         let sz_wire = sig.sz_str.as_deref().unwrap_or("0");
@@ -193,12 +163,8 @@ impl Executor {
 
         let body = build_exchange_body(&action, nonce, &sig);
 
-        let resp = self
-            .client
-            .post(format!("{}/exchange", self.cfg.api_url))
-            .json(&body)
-            .send()
-            .await?;
+        let resp =
+            self.client.post(format!("{}/exchange", self.cfg.api_url)).json(&body).send().await?;
         let data: serde_json::Value = resp.json().await?;
 
         let statuses = data["response"]["data"]["statuses"].as_array();
@@ -241,9 +207,7 @@ impl Executor {
         aggressive_px: f64,
     ) -> Result<Option<f64>> {
         let nonce = self.next_nonce();
-        let sig = self
-            .signer
-            .sign_l1_order(coin, is_buy, true, aggressive_px, sz, nonce, "Ioc")?;
+        let sig = self.signer.sign_l1_order(coin, is_buy, true, aggressive_px, sz, nonce, "Ioc")?;
 
         let px_wire = sig.px_str.as_deref().unwrap_or("0");
         let sz_wire = sig.sz_str.as_deref().unwrap_or("0");
@@ -266,12 +230,8 @@ impl Executor {
 
         let body = build_exchange_body(&action, nonce, &sig);
 
-        let resp = self
-            .client
-            .post(format!("{}/exchange", self.cfg.api_url))
-            .json(&body)
-            .send()
-            .await?;
+        let resp =
+            self.client.post(format!("{}/exchange", self.cfg.api_url)).json(&body).send().await?;
         let data: serde_json::Value = resp.json().await?;
 
         let statuses = data["response"]["data"]["statuses"].as_array();
@@ -305,8 +265,7 @@ impl Executor {
     ) -> Result<OrderOutcome> {
         let nonce = self.next_nonce();
         let sig =
-            self.signer
-                .sign_l1_order(coin, is_buy, reduce_only, limit_px, sz, nonce, "Gtc")?;
+            self.signer.sign_l1_order(coin, is_buy, reduce_only, limit_px, sz, nonce, "Gtc")?;
 
         let px_wire = sig.px_str.as_deref().unwrap_or("0");
         let sz_wire = sig.sz_str.as_deref().unwrap_or("0");
@@ -329,12 +288,8 @@ impl Executor {
 
         let body = build_exchange_body(&action, nonce, &sig);
 
-        let resp = self
-            .client
-            .post(format!("{}/exchange", self.cfg.api_url))
-            .json(&body)
-            .send()
-            .await?;
+        let resp =
+            self.client.post(format!("{}/exchange", self.cfg.api_url)).json(&body).send().await?;
         let data: serde_json::Value = resp.json().await?;
 
         let statuses = data["response"]["data"]["statuses"].as_array();
@@ -379,12 +334,8 @@ impl Executor {
 
         let body = build_exchange_body(&action, nonce, &sig);
 
-        let resp = self
-            .client
-            .post(format!("{}/exchange", self.cfg.api_url))
-            .json(&body)
-            .send()
-            .await?;
+        let resp =
+            self.client.post(format!("{}/exchange", self.cfg.api_url)).json(&body).send().await?;
         let _data: serde_json::Value = resp.json().await?;
 
         Ok(())
@@ -413,8 +364,7 @@ impl Executor {
         for retreat in 0..=max_retreat {
             let nonce = self.next_nonce();
             let sig =
-                self.signer
-                    .sign_l1_order(coin, is_buy, reduce_only, limit_px, sz, nonce, "Alo")?;
+                self.signer.sign_l1_order(coin, is_buy, reduce_only, limit_px, sz, nonce, "Alo")?;
 
             let px_wire = sig.px_str.as_deref().unwrap_or("0");
             let sz_wire = sig.sz_str.as_deref().unwrap_or("0");
@@ -515,12 +465,8 @@ impl Executor {
 
         let body = build_exchange_body(&action, nonce, &sig);
 
-        let resp = self
-            .client
-            .post(format!("{}/exchange", self.cfg.api_url))
-            .json(&body)
-            .send()
-            .await?;
+        let resp =
+            self.client.post(format!("{}/exchange", self.cfg.api_url)).json(&body).send().await?;
         let _data: serde_json::Value = resp.json().await?;
 
         Ok(())
@@ -660,10 +606,8 @@ impl MarketAdapter for Executor {
 fn extract_statuses(data: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
     // Check for top-level error format first
     if data.get("status").and_then(|v| v.as_str()) == Some("err") {
-        let err_msg = data
-            .get("response")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown exchange error");
+        let err_msg =
+            data.get("response").and_then(|v| v.as_str()).unwrap_or("unknown exchange error");
         tracing::error!(error = %err_msg, "exchange rejected action");
         return None;
     }

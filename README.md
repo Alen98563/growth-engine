@@ -2,6 +2,11 @@
 
 **A Rust market-making engine for Hyperliquid HIP-3 perpetuals — with a data-anchored profitability model and an honest account of what was measured vs modelled.**
 
+> **Authorship and commit provenance.** This engine is written, measured and documented by
+> **ZHANG RUIJIE** (display name *Alen Zhang*). Several commits on `main` carry the author line
+> `Growth Engine Bot` / `Growth Engine` / `YYDS` — that is my own automation bot, which commits the
+> build-and-verify runs. The `v12.8` branch commits are authored directly by me.
+
 [![Rust](https://img.shields.io/badge/Rust-1.70%2B-000?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Architecture](https://img.shields.io/badge/architecture-3--layer%20%C2%B7%2014%20risk%20mechanisms%20verified-7c3aed)](#architecture)

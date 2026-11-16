@@ -29,9 +29,8 @@ impl Signer {
     /// Create from hex-encoded private key (0x-prefixed).
     /// The address is derived from the key by the script.
     pub fn new(private_key_hex: String, address: String) -> Self {
-        let script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("scripts")
-            .join("hl_sign.py");
+        let script_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts").join("hl_sign.py");
 
         tracing::info!(%address, script = %script_path.display(), "signer initialized");
         Self {
@@ -46,13 +45,9 @@ impl Signer {
     /// Call once at startup to avoid per-order /info API calls.
     pub fn load_asset_indices(&mut self, coins: &[String]) {
         use std::process::Command;
-        let script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("scripts")
-            .join("hl_sign.py");
-        let output = Command::new("python3")
-            .arg(&script_path)
-            .arg("meta-cache")
-            .output();
+        let script_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts").join("hl_sign.py");
+        let output = Command::new("python3").arg(&script_path).arg("meta-cache").output();
         match output {
             Ok(out) if out.status.success() => {
                 if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {

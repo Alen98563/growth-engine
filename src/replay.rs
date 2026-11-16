@@ -61,7 +61,9 @@ fn parse_args(argv: &[String]) -> Result<Args> {
             "--out" => a.out = v.context("--out needs a path")?,
             "--json" => a.json = v.context("--json needs a path")?,
             "--fee-bps" => a.fee_bps = Some(v.context("--fee-bps needs a number")?.parse()?),
-            "--skew-power" => a.skew_power = Some(v.context("--skew-power needs a number")?.parse()?),
+            "--skew-power" => {
+                a.skew_power = Some(v.context("--skew-power needs a number")?.parse()?)
+            }
             "--max-skew-bps" => {
                 a.max_skew_bps = Some(v.context("--max-skew-bps needs a number")?.parse()?)
             }
@@ -75,7 +77,9 @@ fn parse_args(argv: &[String]) -> Result<Args> {
             "--min-order-size" => {
                 a.min_order_size = Some(v.context("--min-order-size needs a number")?.parse()?)
             }
-            "--notional-map" => a.notional_map = Some(v.context("--notional-map needs COIN=USD,...")?),
+            "--notional-map" => {
+                a.notional_map = Some(v.context("--notional-map needs COIN=USD,...")?)
+            }
             "--points" => a.ticks = v.context("--points needs an int")?.parse()?,
             other => anyhow::bail!("unknown replay flag: {other}"),
         }
@@ -86,6 +90,8 @@ fn parse_args(argv: &[String]) -> Result<Args> {
 
 #[derive(Debug, Clone, Default)]
 struct Rec {
+    /// Recorded for provenance; the current report does not read it.
+    #[allow(dead_code)]
     ts: String,
     coin: String,
     state: String,
@@ -124,9 +130,9 @@ struct CoinStats {
     cash: f64,
     max_abs_inv_notional: f64,
     series_spread: Vec<(f64, f64, f64)>, // idx, gross, net
-    series_ratio: Vec<(f64, f64)>,      // idx, recorded position_ratio
-    series_skew: Vec<(f64, f64, f64)>,  // idx, recorded skew, replayed skew
-    series_equity: Vec<(f64, f64)>,     // idx, mark-to-market equity
+    series_ratio: Vec<(f64, f64)>,       // idx, recorded position_ratio
+    series_skew: Vec<(f64, f64, f64)>,   // idx, recorded skew, replayed skew
+    series_equity: Vec<(f64, f64)>,      // idx, mark-to-market equity
 }
 
 /// Friendly wrapper for the replay loop: build the book the engine would have seen.
@@ -140,11 +146,16 @@ fn book_from(coin: &str, mid: f64, gross_spread_bps: f64, bid_sz: f64, ask_sz: f
 }
 
 fn account_from(coin: &str, size: f64, equity: f64, withdrawable: f64, mid: f64) -> AccountState {
-    let mut acc = AccountState::default();
-    acc.equity = equity;
-    acc.withdrawable = withdrawable;
-    acc.positions = vec![Position { coin: coin.to_string(), size, entry_px: mid, unrealized_pnl: 0.0 }];
-    acc
+    AccountState {
+        equity,
+        withdrawable,
+        positions: vec![Position {
+            coin: coin.to_string(),
+            size,
+            entry_px: mid,
+            unrealized_pnl: 0.0,
+        }],
+    }
 }
 
 /// Engine gate + coarse-tick sizing, mirrored from `engine.rs` (V12.1/V12.2).
@@ -154,21 +165,17 @@ fn account_from(coin: &str, size: f64, equity: f64, withdrawable: f64, mid: f64)
 /// `coarse_tick_size_pct` with the unwind side boosted and the adverse side
 /// capped. Replaying without this step would mis-attribute an executor rule to
 /// the risk model, so it is reproduced here on purpose.
-fn gate_adjust(cfg: &Config, rec: &Rec, out: Option<&crate::risk::RiskOutput>) -> (f64, f64, f64, f64) {
+fn gate_adjust(
+    cfg: &Config,
+    rec: &Rec,
+    out: Option<&crate::risk::RiskOutput>,
+) -> (f64, f64, f64, f64) {
     let Some(o) = out else {
         return (0.0, 0.0, 0.0, 0.0);
     };
     let tick = cfg.tick_for(&rec.coin);
-    let tick_bps = if rec.mid_px > 0.0 {
-        tick / rec.mid_px * 10000.0
-    } else {
-        0.0
-    };
-    let gross_ticks = if tick_bps > 0.0 {
-        (o.gross_spread_bps / tick_bps).round()
-    } else {
-        0.0
-    };
+    let tick_bps = if rec.mid_px > 0.0 { tick / rec.mid_px * 10000.0 } else { 0.0 };
+    let gross_ticks = if tick_bps > 0.0 { (o.gross_spread_bps / tick_bps).round() } else { 0.0 };
     let pct = if o.gross_spread_bps < cfg.maker_fee_bps + cfg.min_margin_bps {
         0.0
     } else if o.gross_spread_bps >= cfg.coarse_tick_bps_threshold && gross_ticks <= 1.0 {
@@ -214,12 +221,12 @@ fn gate_adjust(cfg: &Config, rec: &Rec, out: Option<&crate::risk::RiskOutput>) -
 }
 
 pub fn run(argv: &[String]) -> Result<()> {
-    let args = parse_args(argv)?;    let t0 = Instant::now();
+    let args = parse_args(argv)?;
+    let t0 = Instant::now();
 
-    let mut cfg = Config::default();
     // The recorded run used the crate defaults; flags below let a reader perturb
     // them and watch the fidelity number move.
-    cfg.growth_mode = true;
+    let mut cfg = Config { growth_mode: true, ..Default::default() };
     if let Some(v) = args.hard_limit {
         cfg.hard_limit_ratio = v;
     }
@@ -266,8 +273,8 @@ pub fn run(argv: &[String]) -> Result<()> {
     let mut engines: BTreeMap<String, RiskEngine> = BTreeMap::new();
 
     // ── Read tape ──
-    let f = fs::File::open(&args.tape)
-        .with_context(|| format!("cannot open tape: {}", args.tape))?;
+    let f =
+        fs::File::open(&args.tape).with_context(|| format!("cannot open tape: {}", args.tape))?;
     let mut lines = BufReader::new(f).lines();
     let header = lines.next().context("empty tape")??;
     let cols: Vec<&str> = header.split(',').map(|s| s.trim()).collect();
@@ -278,8 +285,12 @@ pub fn run(argv: &[String]) -> Result<()> {
     };
     let (c_ts, c_coin, c_state) = (col("ts")?, col("coin")?, col("state")?);
     let (c_pos, c_eq, c_wd) = (col("pos_sz")?, col("equity")?, col("withdrawable")?);
-    let (c_gross, c_net, c_skew, c_ratio) =
-        (col("gross_spread_bps")?, col("net_spread_bps")?, col("skew_bps")?, col("position_ratio")?);
+    let (c_gross, c_net, c_skew, c_ratio) = (
+        col("gross_spread_bps")?,
+        col("net_spread_bps")?,
+        col("skew_bps")?,
+        col("position_ratio")?,
+    );
     let (c_mid, c_bsz, c_asz) = (col("mid_px")?, col("bid_sz")?, col("ask_sz")?);
     let (c_pb, c_ps) = (col("placed_buy_sz")?, col("placed_sell_sz")?);
 
@@ -325,13 +336,7 @@ pub fn run(argv: &[String]) -> Result<()> {
 
         // ── replay decision for this row ──
         let book = book_from(&rec.coin, rec.mid_px, rec.gross_spread_bps, rec.bid_sz, rec.ask_sz);
-        let acc = account_from(
-            &rec.coin,
-            rec.pos_sz,
-            rec.equity,
-            rec.withdrawable,
-            rec.mid_px,
-        );
+        let acc = account_from(&rec.coin, rec.pos_sz, rec.equity, rec.withdrawable, rec.mid_px);
         let coin = rec.coin.clone();
         let risk = engines.entry(coin.clone()).or_insert_with(|| {
             let mut c2 = cfg.clone();
@@ -486,7 +491,16 @@ pub fn run(argv: &[String]) -> Result<()> {
         .with_context(|| format!("cannot write {}", args.json))?;
 
     // ── HTML report ──
-    let html = render_html(&args, &summary, &stats, pct(0.50), pct(0.90), pct(0.99), rows, t0.elapsed().as_secs_f64());
+    let html = render_html(
+        &args,
+        &summary,
+        &stats,
+        pct(0.50),
+        pct(0.90),
+        pct(0.99),
+        rows,
+        t0.elapsed().as_secs_f64(),
+    );
     if let Some(dir) = std::path::Path::new(&args.out).parent() {
         fs::create_dir_all(dir).ok();
     }
@@ -496,7 +510,11 @@ pub fn run(argv: &[String]) -> Result<()> {
     println!("  fidelity    {:.1}% of quotes reproduced", {
         let m: usize = stats.values().map(|s| s.fidelity_matches).sum();
         let c: usize = stats.values().map(|s| s.fidelity_checked).sum();
-        if c > 0 { m as f64 / c as f64 * 100.0 } else { 0.0 }
+        if c > 0 {
+            m as f64 / c as f64 * 100.0
+        } else {
+            0.0
+        }
     });
     println!("  fills       {}", stats.values().map(|s| s.fills).sum::<usize>());
     println!("  synthetic P&L {:.4}", stats.values().map(|s| s.cash).sum::<f64>());
@@ -536,7 +554,14 @@ fn polyline(points: &[(f64, f64)], w: f64, h: f64, color: &str, y_min: f64, y_ma
     )
 }
 
-fn chart(series: &[(f64, f64, f64)], labels: (&str, &str), w: f64, h: f64, colors: (&str, &str), n: usize) -> String {
+fn chart(
+    series: &[(f64, f64, f64)],
+    labels: (&str, &str),
+    w: f64,
+    h: f64,
+    colors: (&str, &str),
+    n: usize,
+) -> String {
     let s = downsample(series, n);
     let mut ymin = f64::MAX;
     let mut ymax = f64::MIN;
@@ -572,6 +597,7 @@ fn chart(series: &[(f64, f64, f64)], labels: (&str, &str), w: f64, h: f64, color
     )
 }
 
+#[allow(clippy::too_many_arguments)] // report renderer: 8 explicit inputs, no natural struct
 fn render_html(
     args: &Args,
     summary: &serde_json::Value,
@@ -618,15 +644,45 @@ fn render_html(
             st.cash
         ));
 
-        let spread_chart = chart(&st.series_spread, ("gross spread (bps)", "net after skew"), 860.0, 150.0, ("#6366f1", "#10b981"), args.ticks);
+        let spread_chart = chart(
+            &st.series_spread,
+            ("gross spread (bps)", "net after skew"),
+            860.0,
+            150.0,
+            ("#6366f1", "#10b981"),
+            args.ticks,
+        );
         let ratio_chart = {
-            let s: Vec<(f64, f64, f64)> = st.series_ratio.iter().map(|(x, v)| (*x, *v, *v)).collect();
-            chart(&s, ("position ratio", "(same)"), 860.0, 120.0, ("#f59e0b", "#f59e0b"), args.ticks)
+            let s: Vec<(f64, f64, f64)> =
+                st.series_ratio.iter().map(|(x, v)| (*x, *v, *v)).collect();
+            chart(
+                &s,
+                ("position ratio", "(same)"),
+                860.0,
+                120.0,
+                ("#f59e0b", "#f59e0b"),
+                args.ticks,
+            )
         };
-        let skew_chart = chart(&st.series_skew, ("recorded skew", "replayed skew"), 860.0, 120.0, ("#94a3b8", "#ef4444"), args.ticks);
+        let skew_chart = chart(
+            &st.series_skew,
+            ("recorded skew", "replayed skew"),
+            860.0,
+            120.0,
+            ("#94a3b8", "#ef4444"),
+            args.ticks,
+        );
         let equity_chart = {
-            let s: Vec<(f64, f64, f64)> = st.series_equity.iter().map(|(x, v)| (*x, *v, *v)).collect();
-            chart(&s, ("synthetic P&L (USD)", "(same)"), 860.0, 140.0, ("#0ea5e9", "#0ea5e9"), args.ticks)
+            let s: Vec<(f64, f64, f64)> =
+                st.series_equity.iter().map(|(x, v)| (*x, *v, *v)).collect();
+            chart(
+                &s,
+                ("synthetic P&L (USD)", "(same)"),
+                860.0,
+                140.0,
+                ("#0ea5e9", "#0ea5e9"),
+                args.ticks,
+            )
         };
 
         let states: String = st

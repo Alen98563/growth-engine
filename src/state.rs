@@ -239,18 +239,13 @@ impl Default for CoinStateMachine {
 impl CoinStateMachine {
     /// Create a new coin state registry (manages all coins).
     pub fn new() -> Self {
-        Self {
-            coins: HashMap::new(),
-            cold_start_max: 2,
-            cooldown_duration_secs: 30.0,
-        }
+        Self { coins: HashMap::new(), cold_start_max: 2, cooldown_duration_secs: 30.0 }
     }
 
     /// Force-inject a coin with a pre-set state — used by bootstrap recovery
     /// to map existing positions into the correct FSM lane.
     pub fn init_coin(&mut self, coin: &str, state: State) {
-        self.coins
-            .insert(coin.to_string(), PerCoinState::new_with_state(state));
+        self.coins.insert(coin.to_string(), PerCoinState::new_with_state(state));
     }
 
     /// Get or initialize state for a coin.
@@ -308,9 +303,7 @@ impl CoinStateMachine {
 
     /// Check if coin is currently gate-blocked.
     pub fn is_gate_blocked(&self, coin: &str) -> bool {
-        self.coins
-            .get(coin)
-            .is_some_and(|cs| cs.state == State::GateBlocked)
+        self.coins.get(coin).is_some_and(|cs| cs.state == State::GateBlocked)
     }
 
     /// Transition to Waiting with a human-readable reason.
@@ -446,16 +439,12 @@ impl CoinStateMachine {
 
     /// Check if buy side should be stopped (COARSE mode sensitive skew).
     pub fn buy_side_tapped_out(&self, coin: &str, max_fills: u32) -> bool {
-        self.coins
-            .get(coin)
-            .is_some_and(|cs| cs.buy_fills_tally >= max_fills)
+        self.coins.get(coin).is_some_and(|cs| cs.buy_fills_tally >= max_fills)
     }
 
     /// Check if sell side should be stopped (COARSE mode sensitive skew).
     pub fn sell_side_tapped_out(&self, coin: &str, max_fills: u32) -> bool {
-        self.coins
-            .get(coin)
-            .is_some_and(|cs| cs.sell_fills_tally >= max_fills)
+        self.coins.get(coin).is_some_and(|cs| cs.sell_fills_tally >= max_fills)
     }
 
     // ── V8 Flip Hysteresis: prevent directional whiplash ──
@@ -504,18 +493,12 @@ impl CoinStateMachine {
 
     /// Returns true if directional freeze is active.
     pub fn is_frozen(&self, coin: &str) -> bool {
-        self.coins
-            .get(coin)
-            .map(|c| c.freeze_remaining > 0)
-            .unwrap_or(false)
+        self.coins.get(coin).map(|c| c.freeze_remaining > 0).unwrap_or(false)
     }
 
     /// Returns the freeze direction: -1=SHORT_freeze, 1=LONG_freeze, 0=none.
     pub fn freeze_direction_for(&self, coin: &str) -> i8 {
-        self.coins
-            .get(coin)
-            .map(|c| c.freeze_direction)
-            .unwrap_or(0)
+        self.coins.get(coin).map(|c| c.freeze_direction).unwrap_or(0)
     }
 
     // ── V12.2: Fill toxicity momentum tracking ──

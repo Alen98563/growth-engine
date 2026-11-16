@@ -62,10 +62,7 @@ pub struct Labeler {
 impl Labeler {
     /// Create a labeler that appends cycle snapshots to the given CSV path.
     pub fn new(path: PathBuf) -> Self {
-        Self {
-            path,
-            writer: Mutex::new(None),
-        }
+        Self { path, writer: Mutex::new(None) }
     }
 
     /// Append one record. Opens file lazily; writes CSV header on first call.
@@ -73,11 +70,7 @@ impl Labeler {
     pub fn record(&mut self, rec: CycleRecord) {
         let mut guard = self.writer.lock().unwrap();
         if guard.is_none() {
-            match OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&self.path)
-            {
+            match OpenOptions::new().create(true).append(true).open(&self.path) {
                 Ok(f) => {
                     // Check if file is empty BEFORE moving f into BufWriter
                     let is_empty = f.metadata().map(|m| m.len() == 0).unwrap_or(true);
