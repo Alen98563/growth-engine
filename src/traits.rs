@@ -127,6 +127,28 @@ pub trait MarketAdapter: Send {
         reduce_only: bool,
     ) -> Result<OrderOutcome>;
 
+    /// Place several post-only orders in ONE request.
+    ///
+    /// The venue meters requests, not orders, so a quote cycle that needs both
+    /// sides (or several coins) should commit them together. Outcomes are
+    /// returned positionally, in the same order as `orders`.
+    ///
+    /// Default implementation is "one request per order" so adapters that have
+    /// no native batch endpoint keep working unchanged.
+    async fn place_batch(
+        &mut self,
+        orders: &[(String, bool, f64, f64, bool)],
+    ) -> Result<Vec<OrderOutcome>> {
+        let mut outs = Vec::with_capacity(orders.len());
+        for (coin, is_buy, sz, px, ro) in orders {
+            outs.push(
+                self.place_limit_order(coin, *is_buy, *sz, *px, *ro)
+                    .await?,
+            );
+        }
+        Ok(outs)
+    }
+
     /// Place an IOC (immediate-or-cancel) order for position shedding.
     ///
     /// Crosses the spread to reduce inventory. Returns filled size or None.
@@ -174,6 +196,18 @@ pub trait MarketAdapter: Send {
 
     /// Cancel all open orders for a coin.
     async fn cancel_all_for_coin(&mut self, coin: &str) -> Result<()>;
+
+    /// ── V12.8: request-budget telemetry ──
+
+    /// One-line quota gauge for periodic logging; `None` when there is no ledger.
+    fn quota_gauge_line(&self) -> Option<String> {
+        None
+    }
+
+    /// Estimated request headroom; `None` when unknown (no rejection seen yet).
+    fn quota_headroom_est(&self) -> Option<i64> {
+        None
+    }
 
     /// ── Market parameters ──
 

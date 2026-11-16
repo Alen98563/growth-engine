@@ -29,9 +29,15 @@ impl Signer {
     /// Create from hex-encoded private key (0x-prefixed).
     /// The address is derived from the key by the script.
     pub fn new(private_key_hex: String, address: String) -> Self {
-        let script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("scripts")
-            .join("hl_sign.py");
+        // Deployable path: the binary is scp'd to a host that does not carry the
+        // repo, so the signer script is resolved from GE_SIGNER_SCRIPT when set.
+        let script_path = std::env::var("GE_SIGNER_SCRIPT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("scripts")
+                    .join("hl_sign.py")
+            });
 
         tracing::info!(%address, script = %script_path.display(), "signer initialized");
         Self {
@@ -46,9 +52,7 @@ impl Signer {
     /// Call once at startup to avoid per-order /info API calls.
     pub fn load_asset_indices(&mut self, coins: &[String]) {
         use std::process::Command;
-        let script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("scripts")
-            .join("hl_sign.py");
+        let script_path = self.script_path.clone();
         let output = Command::new("python3")
             .arg(&script_path)
             .arg("meta-cache")
@@ -185,6 +189,62 @@ impl Signer {
 
         parse_signature_output(&output.stdout, "cancel_by_cloid")
     }
+    /// Sign a batch of orders in ONE EIP-712 signature (one python call, one
+    /// signature, one REST request).
+    ///
+    /// `orders_json` is the array `hl_sign.py batch-order` expects:
+    /// ```json
+    /// [{"coin":"ETH","is_buy":true,"px":1752.5,"sz":0.0066,"reduce_only":false,"tif":"Alo"}]
+    /// ```
+    pub fn sign_l1_batch_order(&self, orders_json: &str, nonce: u64) -> Result<BatchSignedAction> {
+        let output = Command::new("python3")
+            .arg(&self.script_path)
+            .arg("batch-order")
+            .arg("--private-key")
+            .arg(&self.private_key)
+            .arg("--orders")
+            .arg(orders_json)
+            .arg("--nonce")
+            .arg(nonce.to_string())
+            .output()
+            .context("failed to run hl_sign.py batch-order")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("hl_sign.py batch-order failed: {}", stderr);
+        }
+
+        parse_batch_signature_output(&output.stdout)
+    }
+
+    /// Sign an already-constructed action verbatim (used for multi-cancel and
+    /// any future action shape). Keeps hl_sign.py as the single signing authority.
+    pub fn sign_l1_action(&self, action_json: &str, nonce: u64) -> Result<SignedAction> {
+        let output = Command::new("python3")
+            .arg(&self.script_path)
+            .arg("sign-action")
+            .arg("--private-key")
+            .arg(&self.private_key)
+            .arg("--action")
+            .arg(action_json)
+            .arg("--nonce")
+            .arg(nonce.to_string())
+            .output()
+            .context("failed to run hl_sign.py sign-action")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("hl_sign.py sign-action failed: {}", stderr);
+        }
+
+        parse_signature_output(&output.stdout, "action")
+    }
+
+    /// Cached asset index for a coin (0 when unknown).
+    pub fn asset_index(&self, coin: &str) -> u32 {
+        self.asset_index_for(coin).max(0) as u32
+    }
+
     /// Get cached asset index for a coin (defaults to 0 if not found).
     fn asset_index_for(&self, coin: &str) -> i64 {
         self.asset_indices.get(coin).copied().unwrap_or(0)
@@ -204,6 +264,8 @@ fn parse_signature_output(stdout: &[u8], action_type: &str) -> Result<SignedActi
         sz_str: Option<String>,
         #[serde(default)]
         asset_idx: Option<u32>,
+        #[serde(default)]
+        action: Option<String>,
     }
 
     let out: SigOut = serde_json::from_slice(stdout)
@@ -216,7 +278,72 @@ fn parse_signature_output(stdout: &[u8], action_type: &str) -> Result<SignedActi
         px_str: out.px_str,
         sz_str: out.sz_str,
         asset_idx: out.asset_idx.unwrap_or(0),
+        action_json: out.action,
         action_type: action_type.to_string(),
+    })
+}
+
+/// One batch signature covering N orders, plus the exact wire strings that
+/// were signed for each order (so the REST body stays byte-identical).
+#[derive(Debug, Clone)]
+pub struct BatchSignedAction {
+    pub r: String,
+    pub s: String,
+    pub v: u32,
+    /// Canonical action JSON the signature covers; must be POSTed verbatim.
+    pub action_json: Option<String>,
+    pub per_order: Vec<SignedOrderWire>,
+}
+
+/// Per-order wire values as produced by `float_to_wire` inside hl_sign.py.
+#[derive(Debug, Clone)]
+pub struct SignedOrderWire {
+    pub px_str: String,
+    pub sz_str: String,
+    pub asset_idx: u32,
+    pub is_buy: bool,
+}
+
+fn parse_batch_signature_output(stdout: &[u8]) -> Result<BatchSignedAction> {
+    #[derive(Deserialize)]
+    struct WireOut {
+        px_str: String,
+        sz_str: String,
+        #[serde(default)]
+        asset_idx: u32,
+        #[serde(default)]
+        is_buy: bool,
+    }
+
+    #[derive(Deserialize)]
+    struct BatchOut {
+        r: String,
+        s: String,
+        v: u32,
+        #[serde(default)]
+        per_order: Vec<WireOut>,
+        #[serde(default)]
+        action: Option<String>,
+    }
+
+    let out: BatchOut = serde_json::from_slice(stdout)
+        .context("failed to parse hl_sign.py batch-order output")?;
+
+    Ok(BatchSignedAction {
+        r: out.r,
+        s: out.s,
+        v: out.v,
+        action_json: out.action,
+        per_order: out
+            .per_order
+            .into_iter()
+            .map(|w| SignedOrderWire {
+                px_str: w.px_str,
+                sz_str: w.sz_str,
+                asset_idx: w.asset_idx,
+                is_buy: w.is_buy,
+            })
+            .collect(),
     })
 }
 
@@ -232,6 +359,8 @@ pub struct SignedAction {
     pub sz_str: Option<String>,
     /// Asset index for this coin (e.g. PUMP=200, FARTCOIN=165)
     pub asset_idx: u32,
+    /// Canonical action JSON the signature covers; must be POSTed verbatim.
+    pub action_json: Option<String>,
     pub action_type: String,
 }
 

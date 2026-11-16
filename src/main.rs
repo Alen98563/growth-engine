@@ -24,12 +24,14 @@
 //!     └─────────────────────┘  └────────────────────────┘
 //! ```
 
+pub mod bench;
 pub mod config;
 pub mod engine;
 pub mod executor;
 pub mod labeler;
 pub mod levels;
 pub mod order_book;
+pub mod quota;
 pub mod replay;
 pub mod risk;
 pub mod signer;
@@ -52,6 +54,20 @@ async fn main() -> Result<()> {
     if std::env::args().nth(1).as_deref() == Some("replay") {
         let rest: Vec<String> = std::env::args().skip(2).collect();
         return replay::run(&rest);
+    }
+
+    // V12.5 quota bench — live venue, tiny post-only orders, batched vs serial:
+    //   growth-engine bench --n 5 --rounds 3 --coin ETH --notional 12
+    if std::env::args().nth(1).as_deref() == Some("bench") {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| EnvFilter::new("growth_engine=warn")),
+            )
+            .json()
+            .init();
+        let rest: Vec<String> = std::env::args().skip(2).collect();
+        return bench::run(&rest).await;
     }
 
     // Initialize structured logging
@@ -77,6 +93,42 @@ async fn main() -> Result<()> {
     let mut signer = Signer::new(cfg.private_key.clone(), cfg.address.clone());
     signer.load_asset_indices(&cfg.coins);
     let adapter = Executor::new(cfg.clone(), signer);
+    // V12.6: in production the budget pre-check is on — a request that the
+    // venue is going to refuse is not worth sending. `GE_QUOTA_GATE=0` turns
+    // it off (used when we deliberately want to measure the venue's behaviour).
+    let gate_on = std::env::var("GE_QUOTA_GATE")
+        .map(|v| v != "0" && v.to_lowercase() != "false")
+        .unwrap_or(true);
+    adapter.set_quota_gate(gate_on);
+    if let Ok(reserve) = std::env::var("GE_QUOTA_RESERVE") {
+        if let Ok(n) = reserve.parse::<u64>() {
+            adapter.set_quota_reserve(n);
+        }
+    }
+    // V12.8: seed the ledger from the venue's own numbers
+    // (`/info userRateLimit` → USED:CAP[:VOLUME]) instead of staying blind until
+    // the first rejection. Without this the conserve mode has nothing to act on.
+    if let Ok(v) = std::env::var("GE_QUOTA_SEED") {
+        let parts: Vec<&str> = v.split(':').collect();
+        if parts.len() >= 2 {
+            if let (Ok(used), Ok(cap)) = (
+                parts[0].trim().parse::<u64>(),
+                parts[1].trim().parse::<u64>(),
+            ) {
+                let volume = parts.get(2).and_then(|s| s.trim().parse::<f64>().ok());
+                adapter.seed_quota(used, cap, volume);
+                tracing::info!(used, cap, volume = ?volume, "request budget seeded");
+            } else {
+                tracing::warn!(raw = %v, "GE_QUOTA_SEED not parseable, ignored");
+            }
+        }
+    }
+    tracing::info!(
+        gate = gate_on,
+        reserve = adapter.quota_gauge().line(),
+        autofund = cfg.quota_autofund,
+        "request-budget pre-check configured"
+    );
 
     // Labeler: ML fuel pipeline (cycle snapshots → CSV)
     let labeler = labeler::Labeler::new(

@@ -699,7 +699,7 @@ footer{{margin-top:48px;padding-top:16px;border-top:1px solid var(--line);color:
 <div class="card"><div class="k">synthetic fills</div><div class="v">{fills}</div></div>
 <div class="card"><div class="k">assess p50 / p99</div><div class="v">{p50:.1} / {p99:.1} µs</div></div>
 </div>
-<p class="muted">wall {secs:.2}s · p90 {p90:.1} µs · fees paid ${fee:.2} · notional traded ${vol:.2} · {config_note}</p>
+<p class="muted">wall {secs:.2}s · p90 {p90:.1} µs · fees paid ${fee:.2} · notional traded ${vol:.2} · synth P&amp;L ${pnl:.2} · {config_note}</p>
 
 <h2>Per-coin</h2>
 <table><tr><th>coin</th><th>ticks</th><th>gross</th><th>net</th><th>skew</th><th>state chg</th><th>fidelity</th><th>fills</th><th>volume</th><th>fees</th><th>synth P&amp;L</th></tr>

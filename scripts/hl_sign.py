@@ -75,6 +75,57 @@ def sign_action(action, private_key, nonce):
     return sign_l1_action(wallet=wallet, action=action, active_pool=None,
                           nonce=nonce, expires_after=None, is_mainnet=True)
 
+
+# The venue hashes each L1 action with msgpack over the dict in the *venue's
+# struct-field order*, so the key order in the JSON we sign must be that order.
+# Rust's serde_json sorts keys, which silently invalidates the signature
+# ("User or API Wallet 0x… does not exist"). Canonicalise here and hand the
+# caller back the exact string it must POST.
+_FIELD_ORDER = {
+    "order": ["type", "orders", "grouping"],
+    "cancel": ["type", "cancels"],
+    "cancelByCloid": ["type", "cancels"],
+    "cancelByCloidAction": ["type", "cancels"],
+    "modify": ["type", "oid", "order"],
+    "updateLeverage": ["type", "asset", "isCross", "leverage"],
+}
+_ITEM_ORDER = {
+    "order": ["a", "b", "p", "s", "r", "t", "c"],
+    "cancel": ["a", "o"],
+}
+
+
+def canonical_action(action):
+    t = action.get("type", "")
+    top = _FIELD_ORDER.get(t)
+    if top is None:
+        return dict(action)
+    out = {}
+    for k in top:
+        if k not in action:
+            continue
+        v = action[k]
+        if k in ("orders", "cancels") and isinstance(v, list):
+            item_keys = _ITEM_ORDER.get(t, [])
+            norm = []
+            for item in v:
+                if isinstance(item, dict):
+                    norm.append({ik: item[ik] for ik in item_keys if ik in item})
+                else:
+                    norm.append(item)
+            out[k] = norm
+        else:
+            out[k] = v
+    for k, v in action.items():  # 未知字段放最后，宁可保留也不丢
+        if k not in out:
+            out[k] = v
+    return out
+
+
+def canonical_json(action):
+    return json.dumps(canonical_action(action), separators=(",", ":"))
+
+
 def main():
     parser = argparse.ArgumentParser(description=f"Hyperliquid EIP-712 signer v{__version__}")
     subs = parser.add_subparsers(dest="command", required=True)
@@ -111,6 +162,13 @@ def main():
     p.add_argument("--nonce", required=True, type=int)
     p.add_argument("--asset-idx", type=int, default=None, help="preloaded asset index (skip meta API)")
 
+    # v2.2: sign an already-built action verbatim. Used for multi-cancel
+    # (N cancels in one action → one request) and any future action shape.
+    p = subs.add_parser("sign-action")
+    p.add_argument("--private-key", required=True)
+    p.add_argument("--action", required=True, help="raw action JSON")
+    p.add_argument("--nonce", required=True, type=int)
+
     args = parser.parse_args()
     pk = getattr(args, "private_key", "0x")
     if not pk.startswith("0x"):
@@ -135,6 +193,11 @@ def main():
             action = build_cancel_action(args.coin, args.oid, asset_idx=args.asset_idx)
         elif args.command == "cancel-by-cloid":
             action = build_cancel_by_cloid_action(args.coin, asset_idx=args.asset_idx)
+        elif args.command == "sign-action":
+            action = json.loads(args.action)
+            if not isinstance(action, dict) or "type" not in action:
+                raise ValueError("action JSON must be an object with a 'type' field")
+            action = canonical_action(action)
     except Exception as e:
         print(json.dumps({"error": f"build: {e}"}), file=sys.stderr); sys.exit(1)
     try:
@@ -152,6 +215,9 @@ def main():
             except: sig["asset_idx"] = 0
     if args.command == "batch-order" and per_order:
         sig["per_order"] = per_order
+    # 回传规范化后的 action 字符串：调用方必须原样 POST 这一串，
+    # 否则重新序列化会改变 msgpack 字节序，签名即失效。
+    sig["action"] = canonical_json(action)
     print(json.dumps(sig))
 
 if __name__ == "__main__":

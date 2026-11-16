@@ -95,6 +95,26 @@ pub async fn run<A: MarketAdapter>(
 
     tracing::info!("engine started (graceful shutdown: SIGTERM/SIGINT, toxic defense: ON)");
 
+    // ── V12.8: request-budget telemetry + conserve mode ──
+    // GE_QUOTA_GAUGE_EVERY=N  → log the gauge every N cycles (0 disables)
+    // GE_QUOTA_CONSERVE_BELOW=N → when estimated headroom < N, keep cancelling but
+    //   stop quoting (0 disables, which is the default: behaviour unchanged).
+    let quota_gauge_every: u64 = std::env::var("GE_QUOTA_GAUGE_EVERY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20);
+    let quota_conserve_below: i64 = std::env::var("GE_QUOTA_CONSERVE_BELOW")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let mut cycle_no: u64 = 0;
+    tracing::info!(
+        gauge_every = quota_gauge_every,
+        conserve_below = quota_conserve_below,
+        "quota telemetry configured (periodic gauge + optional conserve mode)"
+    );
+
+
     loop {
         let cycle_start = std::time::Instant::now();
 
@@ -158,6 +178,15 @@ pub async fn run<A: MarketAdapter>(
         // ── 2. Process each coin ──
         for coin in &cfg.coins.clone() {
             let current_state = coin_state.state_of(coin);
+
+            // V12.8: conserve mode — headroom below the floor means every request we
+            // spend on quoting is borrowed from the cancel side. Keep sweeping orders,
+            // place nothing.
+            let quota_conserve = quota_conserve_below > 0
+                && adapter
+                    .quota_headroom_est()
+                    .map(|h| h < quota_conserve_below)
+                    .unwrap_or(false);
 
             let mut metrics = CycleMetrics {
                 coin: coin.clone(),
@@ -862,8 +891,10 @@ pub async fn run<A: MarketAdapter>(
                 let mut new_oids: Vec<u64> = Vec::new();
 
                 // Place BUY order
-                if !freeze_buy && buy_sz > 0.0 {
-                    if is_unwind {
+                if is_unwind {
+                    // Unwind legs are taker GTC: different tif, must cross the
+                    // spread immediately, so they never join the post-only batch.
+                    if !freeze_buy && buy_sz > 0.0 {
                         // Unwind BUY: GTC non-Post-Only at best_ask to cross spread.
                         // place_limit_order uses Alo (rejected when crossing) → use GTC instead.
                         let aggressive_px = book.best_ask().unwrap_or(defensive_bid_px + coin_tick);
@@ -886,23 +917,80 @@ pub async fn run<A: MarketAdapter>(
                         if unwind_buy_sz > 0.0 {
                             match adapter
                                 .place_gtc_order(coin, true, unwind_buy_sz, aggressive_px, false)
-                            .await
-                        {
-                            Ok(OrderOutcome::Rested(oid)) => {
-                                new_oids.push(oid);
-                                metrics.placed_buy = true;
+                                .await
+                            {
+                                Ok(OrderOutcome::Rested(oid)) => {
+                                    new_oids.push(oid);
+                                    metrics.placed_buy = true;
+                                }
+                                Ok(OrderOutcome::FilledTaker) => {
+                                    metrics.placed_buy = true;
+                                    tracing::info!(coin=%coin, "unwind BUY filled as taker");
+                                }
+                                Ok(OrderOutcome::Rejected(reason)) => {
+                                    tracing::warn!(coin=%coin, ?reason, "unwind BUY rejected");
+                                }
+                                Err(e) => tracing::warn!(coin=%coin, side="BUY", ?e, "unwind order error"),
                             }
-                            Ok(OrderOutcome::FilledTaker) => {
-                                metrics.placed_buy = true;
-                                tracing::info!(coin=%coin, "unwind BUY filled as taker");
-                            }
-                            Ok(OrderOutcome::Rejected(reason)) => {
-                                tracing::warn!(coin=%coin, ?reason, "unwind BUY rejected");
-                            }
-                            Err(e) => tracing::warn!(coin=%coin, side="BUY", ?e, "unwind order error"),
                         }
-                        }  // close if unwind_buy_sz > 0.0
-                    } else {
+                    }
+                    if !freeze_sell && sell_sz > 0.0 {
+                        // Unwind SELL: GTC non-Post-Only at best_bid to cross spread
+                        let aggressive_px = book.best_bid().unwrap_or(defensive_ask_px - coin_tick);
+                        // 🩹 Residual capping: prevent over-rotation near zero position
+                        let mid_for_cap2 = book.mid_price().unwrap_or(aggressive_px);
+                        let current_pos_value2 = (pos.size.abs() * mid_for_cap2).abs();
+                        let unwind_sell_sz = if current_pos_value2 < cfg.base_order_notional * 1.5 {
+                            let qty = current_pos_value2 / aggressive_px.max(0.000001);
+                            if qty * aggressive_px < cfg.min_order_size {
+                                tracing::info!(coin=%coin, pos_value=current_pos_value2,
+                                    "UNWIND residual too small, skip sell");
+                                0.0
+                            } else {
+                                tracing::info!(coin=%coin, qty=qty, pos_value=current_pos_value2,
+                                    "UNWIND precision cleanup sell");
+                                qty
+                            }
+                        } else {
+                            risk_out.sell_sz
+                        };
+                        if unwind_sell_sz > 0.0 {
+                            match adapter
+                                .place_gtc_order(coin, false, unwind_sell_sz, aggressive_px, false)
+                                .await
+                            {
+                                Ok(OrderOutcome::Rested(oid)) => {
+                                    new_oids.push(oid);
+                                    metrics.placed_sell = true;
+                                }
+                                Ok(OrderOutcome::FilledTaker) => {
+                                    metrics.placed_sell = true;
+                                    tracing::info!(coin=%coin, "unwind SELL filled as taker");
+                                }
+                                Ok(OrderOutcome::Rejected(reason)) => {
+                                    tracing::warn!(coin=%coin, ?reason, "unwind SELL rejected");
+                                }
+                                Err(e) => tracing::warn!(coin=%coin, side="SELL", ?e, "unwind order error"),
+                            }
+                        }
+                    }
+                } else if quota_conserve {
+                    // V12.8: quota floor reached — hold the quote, keep the sweep.
+                    tracing::warn!(
+                        coin = %coin,
+                        headroom = ?adapter.quota_headroom_est(),
+                        gauge = %adapter.quota_gauge_line().unwrap_or_default(),
+                        "QUOTA CONSERVE: placement withheld, cancels still allowed"
+                    );
+                } else {
+                    // ── V12.7: both quote sides go out as ONE /exchange request ──
+                    // Same number of venue-metered orders (the quota is per ORDER,
+                    // measured 2026-11-16), but one HTTP round trip, one signature,
+                    // one nonce — which is where the 3x latency win comes from.
+                    let mut batch: Vec<(String, bool, f64, f64, bool)> = Vec::with_capacity(2);
+                    let mut side_is_buy: Vec<bool> = Vec::with_capacity(2);
+
+                    if !freeze_buy && buy_sz > 0.0 {
                         let gate_mode = coin_state.get_or_init(coin).gate_mode.clone();
                         let mut shading_offset = calculate_bid_tick_offset(
                             coin_state.ask_rejection_count(coin),
@@ -927,71 +1015,11 @@ pub async fn run<A: MarketAdapter>(
                                 "bid shading applied"
                             );
                         }
-                        rate_limit_delay().await;
-                        
-                        match adapter
-                            .place_limit_order(coin, true, risk_out.buy_sz, shaded_bid, false)
-                            .await
-                        {
-                            Ok(OrderOutcome::Rested(oid)) => {
-                                new_oids.push(oid);
-                                metrics.placed_buy = true;
-                                coin_state.reset_ask_rejections(coin);
-                            }
-                            Ok(OrderOutcome::FilledTaker) => {
-                                metrics.placed_buy = true;
-                                coin_state.reset_ask_rejections(coin);
-                            }
-                            Ok(OrderOutcome::Rejected(reason)) => {
-                                tracing::debug!(coin = %coin, ?reason, "buy order rejected");
-                            }
-                            Err(e) => tracing::warn!(coin = %coin, side = "BUY", ?e, "order error"),
-                        }
+                        batch.push((coin.clone(), true, buy_sz, shaded_bid, false));
+                        side_is_buy.push(true);
                     }
-                }
 
-                // Place SELL order
-                if !freeze_sell && sell_sz > 0.0 {
-                    if is_unwind && sell_sz > 0.0 {
-                        // Unwind SELL: GTC non-Post-Only at best_bid to cross spread
-                        let aggressive_px = book.best_bid().unwrap_or(defensive_ask_px - coin_tick);
-                        // 🩹 Residual capping: prevent over-rotation near zero position
-                        let mid_for_cap2 = book.mid_price().unwrap_or(aggressive_px);
-                        let current_pos_value2 = (pos.size.abs() * mid_for_cap2).abs();
-                        let unwind_sell_sz = if current_pos_value2 < cfg.base_order_notional * 1.5 {
-                            let qty = current_pos_value2 / aggressive_px.max(0.000001);
-                            if qty * aggressive_px < cfg.min_order_size {
-                                tracing::info!(coin=%coin, pos_value=current_pos_value2,
-                                    "UNWIND residual too small, skip sell");
-                                0.0
-                            } else {
-                                tracing::info!(coin=%coin, qty=qty, pos_value=current_pos_value2,
-                                    "UNWIND precision cleanup sell");
-                                qty
-                            }
-                        } else {
-                            risk_out.sell_sz
-                        };
-                        if unwind_sell_sz > 0.0 {
-                            match adapter
-                                .place_gtc_order(coin, false, unwind_sell_sz, aggressive_px, false)
-                            .await
-                        {
-                            Ok(OrderOutcome::Rested(oid)) => {
-                                new_oids.push(oid);
-                                metrics.placed_sell = true;
-                            }
-                            Ok(OrderOutcome::FilledTaker) => {
-                                metrics.placed_sell = true;
-                                tracing::info!(coin=%coin, "unwind SELL filled as taker");
-                            }
-                            Ok(OrderOutcome::Rejected(reason)) => {
-                                tracing::warn!(coin=%coin, ?reason, "unwind SELL rejected");
-                            }
-                            Err(e) => tracing::warn!(coin=%coin, side="SELL", ?e, "unwind order error"),
-                        }
-                        }  // close if unwind_sell_sz > 0.0
-                    } else {
+                    if !freeze_sell && sell_sz > 0.0 {
                         // ASK shading: retreat SELL upward when rejected
                         let ask_reject = coin_state.ask_rejection_count(coin);
                         let mut ask_offset = calculate_ask_tick_offset(ask_reject, risk_out.skew_bps);
@@ -1014,48 +1042,110 @@ pub async fn run<A: MarketAdapter>(
                                 "ask shading applied"
                             );
                         }
-                        match adapter
-                            .place_limit_order(coin, false, sell_sz, shaded_ask, false)
-                            .await
-                        {
-                            Ok(OrderOutcome::Rested(oid)) => {
-                                new_oids.push(oid);
-                                metrics.placed_sell = true;
-                                coin_state.reset_ask_rejections(coin);
-                            }
-                            Ok(OrderOutcome::FilledTaker) => {
-                                metrics.placed_sell = true;
-                                coin_state.reset_ask_rejections(coin);
-                            }
-                            Ok(OrderOutcome::Rejected(Some(ref reason)))
-                                if reason.to_lowercase().contains("would match") =>
-                            {
-                                let count = coin_state.increment_ask_rejections(coin);
-                                let mut bid_offset = calculate_bid_tick_offset(count, risk_out.skew_bps);
-                                let mut ask_offset2 = calculate_ask_tick_offset(count, risk_out.skew_bps);
-                                // V12.1: COARSE mode — zero shading
-                                let gate_mode_rr = coin_state.get_or_init(coin).gate_mode.clone();
-                                if gate_mode_rr == "COARSE" {
-                                    bid_offset = 0;
-                                    ask_offset2 = 0;
-                                // V12: Coarse tick hard cap on rejection-retry shading too
-                                } else if risk_out.gross_spread_bps >= 30.0 {
-                                    bid_offset = bid_offset.min(1);
-                                    ask_offset2 = ask_offset2.min(1);
+                        batch.push((coin.clone(), false, sell_sz, shaded_ask, false));
+                        side_is_buy.push(false);
+                    }
+
+                    if !batch.is_empty() {
+                        if batch.len() == 1 {
+                            tracing::debug!(coin=%coin, side=if side_is_buy[0] {"BUY"} else {"SELL"},
+                                "single-leg cycle, batch degrades to one order");
+                        }
+                        rate_limit_delay().await;
+                        match adapter.place_batch(&batch).await {
+                            Ok(outs) => {
+                                let mut rested: Vec<(bool, u64)> = Vec::new();
+                                let mut reject_buy = false;
+                                let mut reject_sell = false;
+                                for (idx, out) in outs.into_iter().enumerate() {
+                                    let buy_side = *side_is_buy.get(idx).unwrap_or(&true);
+                                    match out {
+                                        OrderOutcome::Rested(oid) => {
+                                            if buy_side {
+                                                metrics.placed_buy = true;
+                                            } else {
+                                                metrics.placed_sell = true;
+                                                coin_state.reset_ask_rejections(coin);
+                                            }
+                                            rested.push((buy_side, oid));
+                                        }
+                                        OrderOutcome::FilledTaker => {
+                                            // Post-only should never fill as taker; if it
+                                            // does, treat as placed and let unwind handle it.
+                                            if buy_side {
+                                                metrics.placed_buy = true;
+                                            } else {
+                                                metrics.placed_sell = true;
+                                            }
+                                            tracing::warn!(coin=%coin,
+                                                side=if buy_side {"BUY"} else {"SELL"},
+                                                "post-only leg filled as taker");
+                                        }
+                                        OrderOutcome::Rejected(reason) => {
+                                            if buy_side {
+                                                reject_buy = true;
+                                                tracing::debug!(coin=%coin, ?reason, "buy order rejected");
+                                            } else {
+                                                reject_sell = true;
+                                                let would_match = reason
+                                                    .as_ref()
+                                                    .map(|r| r.to_lowercase().contains("would match"))
+                                                    .unwrap_or(false);
+                                                if would_match {
+                                                    let count = coin_state.increment_ask_rejections(coin);
+                                                    let bid_offset = calculate_bid_tick_offset(count, risk_out.skew_bps);
+                                                    let ask_offset2 = calculate_ask_tick_offset(count, risk_out.skew_bps);
+                                                    tracing::warn!(
+                                                        coin = %coin,
+                                                        count,
+                                                        bid_offset_ticks = bid_offset,
+                                                        ask_offset_ticks = ask_offset2,
+                                                        skew_bps = risk_out.skew_bps,
+                                                        "SELL would match -> shading arms for next cycle"
+                                                    );
+                                                } else {
+                                                    tracing::debug!(coin=%coin, ?reason, "sell order rejected");
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
-                                tracing::warn!(
-                                    coin = %coin,
-                                    count,
-                                    bid_offset_ticks = bid_offset,
-                                    ask_offset_ticks = ask_offset2,
-                                    skew_bps = risk_out.skew_bps,
-                                    "SELL would match -> bid+ask shading active"
-                                );
+
+                                // ── single-leg guard ──
+                                // If one leg was rejected, the other must not stay
+                                // resting alone: pull it now instead of carrying an
+                                // unhedged quote into the next cycle.
+                                for (buy_side, oid) in rested.into_iter() {
+                                    let pull = (buy_side && reject_sell) || (!buy_side && reject_buy);
+                                    if pull {
+                                        match adapter.cancel_order(coin, oid).await {
+                                            Ok(_) => {
+                                                if buy_side {
+                                                    metrics.placed_buy = false;
+                                                } else {
+                                                    metrics.placed_sell = false;
+                                                }
+                                                tracing::warn!(
+                                                    coin = %coin,
+                                                    oid,
+                                                    side = if buy_side {"BUY"} else {"SELL"},
+                                                    "single-leg guard: pulled the accepted leg after the other was rejected"
+                                                );
+                                            }
+                                            Err(e) => {
+                                                // Cancel failed: keep the oid so the next
+                                                // cycle's sweep still finds it.
+                                                new_oids.push(oid);
+                                                tracing::warn!(coin=%coin, oid, ?e,
+                                                    "single-leg guard cancel failed, keeping oid for sweep");
+                                            }
+                                        }
+                                    } else {
+                                        new_oids.push(oid);
+                                    }
+                                }
                             }
-                            Ok(OrderOutcome::Rejected(reason)) => {
-                                tracing::debug!(coin = %coin, ?reason, "sell order rejected");
-                            }
-                            Err(e) => tracing::warn!(coin = %coin, side = "SELL", ?e, "order error"),
+                            Err(e) => tracing::warn!(coin = %coin, ?e, "batch quote error"),
                         }
                     }
                 }
@@ -1185,6 +1275,14 @@ pub async fn run<A: MarketAdapter>(
                     side_tally = tally,
                     "fill processed"
                 );
+            }
+        }
+
+        // ── 7.5 V12.8: periodic request-budget gauge ──
+        cycle_no += 1;
+        if quota_gauge_every > 0 && cycle_no % quota_gauge_every == 0 {
+            if let Some(g) = adapter.quota_gauge_line() {
+                tracing::info!(cycle = cycle_no, gauge = %g, "quota gauge (periodic)");
             }
         }
 

@@ -131,3 +131,43 @@ Use `jq` for quick analysis:
 ## License
 
 MIT
+
+## Request budget & batched placement (v12.5–v12.8)
+
+Hyperliquid meters `/exchange` **per order**, and the cap grows with traded volume.
+Both numbers are readable from `GET /info {"type":"userRateLimit"}` → `cumVlm`,
+`nRequestsUsed`, `nRequestsCap`. Measured on 2026-11-16: a four-order action moved
+`nRequestsUsed` by 4 while `cumVlm` grew by $60.08 — so an action carrying N orders costs
+N units, and one dollar of taker volume buys back roughly one unit.
+
+What this engine does about it:
+
+- **Batching buys latency, not quota.** Both quote sides of a coin go out as one action
+  (`MarketAdapter::place_batch`, non-unwind path in `engine.rs`). Same order count for the
+  meter, one HTTP round trip, one signature, one nonce.
+- **`src/quota.rs` keeps a local ledger**, seeded from the venue's own numbers
+  (`GE_QUOTA_SEED=USED:CAP[:VOLUME]`) or corrected by every rejection sentence. Placement
+  paths consult it before sending; cancel paths deliberately do not.
+- **Conserve mode** (`GE_QUOTA_CONSERVE_BELOW=N`): when estimated headroom falls below N,
+  stop quoting and keep sweeping, so the remaining requests go to risk reduction.
+- **Periodic telemetry** (`GE_QUOTA_GAUGE_EVERY=N`) logs
+  `QUOTA state=… headroom=… used=… limit=… ratio=… need_usdc=…` every N cycles.
+- **Auto-refill is off by default** (`GE_QUOTA_AUTOFUND`) and not wired to any trading
+  path: it spends real money (~$1 taker volume per request freed).
+
+Measured on a live test account (Virginia VPS, $12 post-only orders, ETH, gate on):
+
+| metric | serial | batch | ratio |
+|---|---|---|---|
+| HTTP requests per round (3 orders) | 6 | 2 | 3.0× fewer |
+| wall time per round | 11.81 s | 3.82 s | — |
+| place ack, venue round-trip only | 529 ms/order | 214 ms/order | 2.5× |
+| cancel ack, venue round-trip only | 872 ms/order | 293 ms/order | 3.0× |
+
+Reproduce:
+```
+growth-engine bench --n 3 --rounds 1 --coin ETH --notional 12 --max-notional 15 --px-tick 0.1 --quota-gate
+```
+`bench` also accepts `--seed-quota USED:CAP[:VOLUME]` and `--quota-reserve N`, and emits
+`wall_net_median_s` / `place_ack_net_median_ms` (backoff and signing overhead excluded) in
+its `RESULT_JSON`.

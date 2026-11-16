@@ -101,6 +101,13 @@ pub struct Config {
     pub maker_fee_bps: f64,
     /// Taker fee in bps (Growth Mode: 0.50, Standard: 4.5)
     pub taker_fee_bps: f64,
+
+    // ── Request budget ──
+    /// V12.8: auto-refill the venue request budget by trading volume.
+    /// Off by default and deliberately not wired to any trading path: measured
+    /// 2026-11-16 as ~$1 of taker volume per 1 request freed, i.e. real money.
+    /// Turning it on needs a client-signed limit (per-trade cap + flat end state).
+    pub quota_autofund: bool,
 }
 
 impl Default for Config {
@@ -159,6 +166,8 @@ impl Default for Config {
 
             maker_fee_bps: 0.17,
             taker_fee_bps: 0.50,
+
+            quota_autofund: false,
         }
     }
 }
@@ -219,6 +228,18 @@ impl Config {
         } else {
             cfg.maker_fee_bps = 1.5;
             cfg.taker_fee_bps = 4.5;
+        }
+
+        // V12.8: request-budget auto-refill switch. Parsed, logged, and intentionally
+        // inert — see the field docs. Default off.
+        if let Ok(v) = std::env::var("GE_QUOTA_AUTOFUND") {
+            cfg.quota_autofund = matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on");
+        }
+        if cfg.quota_autofund {
+            tracing::warn!(
+                "GE_QUOTA_AUTOFUND requested but not implemented: it spends real money \
+                 (≈$1 taker volume per 1 request). Needs a client-signed cap first."
+            );
         }
 
         Ok(cfg)
