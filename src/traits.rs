@@ -129,9 +129,11 @@ pub trait MarketAdapter: Send {
 
     /// Place several post-only orders in ONE request.
     ///
-    /// The venue meters requests, not orders, so a quote cycle that needs both
-    /// sides (or several coins) should commit them together. Outcomes are
-    /// returned positionally, in the same order as `orders`.
+    /// The venue meters `/exchange` **per order**, so a batch does not buy quota
+    /// back — what it buys is one HTTP round trip, one signature and one nonce
+    /// instead of N of each. That is why a quote cycle that needs both sides
+    /// (or several coins) commits them together. Outcomes are returned
+    /// positionally, in the same order as `orders`.
     ///
     /// Default implementation is "one request per order" so adapters that have
     /// no native batch endpoint keep working unchanged.

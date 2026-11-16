@@ -1115,34 +1115,23 @@ pub async fn run<A: MarketAdapter>(
                                 // If one leg was rejected, the other must not stay
                                 // resting alone: pull it now instead of carrying an
                                 // unhedged quote into the next cycle.
-                                for (buy_side, oid) in rested.into_iter() {
-                                    let pull = (buy_side && reject_sell) || (!buy_side && reject_buy);
-                                    if pull {
-                                        match adapter.cancel_order(coin, oid).await {
-                                            Ok(_) => {
-                                                if buy_side {
-                                                    metrics.placed_buy = false;
-                                                } else {
-                                                    metrics.placed_sell = false;
-                                                }
-                                                tracing::warn!(
-                                                    coin = %coin,
-                                                    oid,
-                                                    side = if buy_side {"BUY"} else {"SELL"},
-                                                    "single-leg guard: pulled the accepted leg after the other was rejected"
-                                                );
-                                            }
-                                            Err(e) => {
-                                                // Cancel failed: keep the oid so the next
-                                                // cycle's sweep still finds it.
-                                                new_oids.push(oid);
-                                                tracing::warn!(coin=%coin, oid, ?e,
-                                                    "single-leg guard cancel failed, keeping oid for sweep");
-                                            }
-                                        }
+                                let mut recon = SingleLegReconcile::default();
+                                reconcile_single_leg(
+                                    &mut adapter, coin, rested, reject_buy, reject_sell, &mut recon,
+                                )
+                                .await;
+                                for (buy_side, _) in &recon.pulled {
+                                    if *buy_side {
+                                        metrics.placed_buy = false;
                                     } else {
-                                        new_oids.push(oid);
+                                        metrics.placed_sell = false;
                                     }
+                                }
+                                for (_, oid) in recon.kept {
+                                    new_oids.push(oid);
+                                }
+                                for oid in recon.leftover {
+                                    new_oids.push(oid);
                                 }
                             }
                             Err(e) => tracing::warn!(coin = %coin, ?e, "batch quote error"),
@@ -1301,6 +1290,222 @@ pub async fn run<A: MarketAdapter>(
             }
             _ = &mut sleep => {}
         }
+    }
+}
+
+/// V12.7 single-leg guard: never carry an unhedged quote into the next cycle.
+///
+/// `rested` holds the legs the batched request got accepted; `reject_buy` /
+/// `reject_sell` say whether the opposite leg came back rejected. A resting leg
+/// is pulled when its partner was rejected. A failed pull is not dropped: the
+/// OID goes back to the caller so the next cycle's sweep still finds it.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct SingleLegReconcile {
+    /// Cancelled just now — the caller must clear the matching `placed_*` flag.
+    pub pulled: Vec<(bool, u64)>,
+    /// Both sides agreed — the order stays live.
+    pub kept: Vec<(bool, u64)>,
+    /// Cancel failed — hand this OID to the next sweep.
+    pub leftover: Vec<u64>,
+}
+
+pub(crate) async fn reconcile_single_leg<A: MarketAdapter>(
+    adapter: &mut A,
+    coin: &str,
+    rested: Vec<(bool, u64)>,
+    reject_buy: bool,
+    reject_sell: bool,
+    out: &mut SingleLegReconcile,
+) {
+    for (buy_side, oid) in rested {
+        let pull = (buy_side && reject_sell) || (!buy_side && reject_buy);
+        if !pull {
+            out.kept.push((buy_side, oid));
+            continue;
+        }
+        match adapter.cancel_order(coin, oid).await {
+            Ok(_) => {
+                tracing::warn!(
+                    coin = %coin,
+                    oid,
+                    side = if buy_side { "BUY" } else { "SELL" },
+                    "single-leg guard: pulled the accepted leg after the other was rejected"
+                );
+                out.pulled.push((buy_side, oid));
+            }
+            Err(e) => {
+                tracing::warn!(
+                    coin = %coin,
+                    oid,
+                    ?e,
+                    "single-leg guard cancel failed, keeping oid for sweep"
+                );
+                out.leftover.push(oid);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod single_leg_guard_tests {
+    use super::*;
+    use crate::traits::{MarketAdapter, MarketCapabilities, MarketType, SettlementMode};
+    use crate::types::{AccountState, L2Book, OrderOutcome};
+    use anyhow::anyhow;
+
+    /// Adapter whose only job is to record `cancel_order` calls and optionally fail.
+    struct MockAdapter {
+        cancelled: Vec<u64>,
+        fail_cancel: bool,
+    }
+
+    impl MockAdapter {
+        fn new(fail_cancel: bool) -> Self {
+            Self { cancelled: Vec::new(), fail_cancel }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MarketAdapter for MockAdapter {
+        fn market_type(&self) -> MarketType {
+            MarketType::CryptoPerp
+        }
+
+        fn capabilities(&self) -> MarketCapabilities {
+            MarketCapabilities {
+                supports_post_only: true,
+                supports_margin: true,
+                supports_options: false,
+                settlement: SettlementMode::Exchange,
+                session_24_7: true,
+                maker_fee_bps: 0.17,
+                taker_fee_bps: 0.5,
+            }
+        }
+
+        async fn fetch_state(&self) -> anyhow::Result<AccountState> {
+            Err(anyhow!("not used in this test"))
+        }
+
+        async fn fetch_l2(&self, _coin: &str) -> anyhow::Result<L2Book> {
+            Err(anyhow!("not used in this test"))
+        }
+
+        async fn place_limit_order(
+            &mut self,
+            _coin: &str,
+            _is_buy: bool,
+            _sz: f64,
+            _limit_px: f64,
+            _reduce_only: bool,
+        ) -> anyhow::Result<OrderOutcome> {
+            Err(anyhow!("not used in this test"))
+        }
+
+        async fn place_ioc_order(
+            &mut self,
+            _coin: &str,
+            _is_buy: bool,
+            _sz: f64,
+            _aggressive_px: f64,
+        ) -> anyhow::Result<Option<f64>> {
+            Err(anyhow!("not used in this test"))
+        }
+
+        async fn place_with_tick_retreat(
+            &mut self,
+            _coin: &str,
+            _is_buy: bool,
+            _sz: f64,
+            _limit_px: f64,
+            _reduce_only: bool,
+            _max_retreat: u32,
+            _tick_size: f64,
+        ) -> anyhow::Result<OrderOutcome> {
+            Err(anyhow!("not used in this test"))
+        }
+
+        async fn place_gtc_order(
+            &mut self,
+            _coin: &str,
+            _is_buy: bool,
+            _sz: f64,
+            _limit_px: f64,
+            _reduce_only: bool,
+        ) -> anyhow::Result<OrderOutcome> {
+            Err(anyhow!("not used in this test"))
+        }
+
+        async fn cancel_order(&mut self, _coin: &str, oid: u64) -> anyhow::Result<()> {
+            self.cancelled.push(oid);
+            if self.fail_cancel {
+                Err(anyhow!("venue said no"))
+            } else {
+                Ok(())
+            }
+        }
+
+        async fn cancel_all_for_coin(&mut self, _coin: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn tick_for(&self, _coin: &str) -> f64 {
+            0.1
+        }
+
+        fn min_order_size(&self) -> f64 {
+            0.001
+        }
+    }
+
+    #[tokio::test]
+    async fn sell_rejected_pulls_the_resting_buy() {
+        let mut a = MockAdapter::new(false);
+        let mut out = SingleLegReconcile::default();
+        reconcile_single_leg(&mut a, "ETH", vec![(true, 11)], true, true, &mut out).await;
+        assert_eq!(out.pulled, vec![(true, 11)]);
+        assert!(out.kept.is_empty());
+        assert!(out.leftover.is_empty());
+        assert_eq!(a.cancelled, vec![11], "buy leg must be cancelled exactly once");
+    }
+
+    #[tokio::test]
+    async fn buy_rejected_pulls_the_resting_sell() {
+        let mut a = MockAdapter::new(false);
+        let mut out = SingleLegReconcile::default();
+        reconcile_single_leg(&mut a, "ETH", vec![(false, 22)], true, true, &mut out).await;
+        assert_eq!(out.pulled, vec![(false, 22)]);
+        assert_eq!(a.cancelled, vec![22]);
+    }
+
+    #[tokio::test]
+    async fn both_legs_accepted_stay_live_and_untouched() {
+        let mut a = MockAdapter::new(false);
+        let mut out = SingleLegReconcile::default();
+        reconcile_single_leg(&mut a, "ETH", vec![(true, 1), (false, 2)], false, false, &mut out).await;
+        assert!(out.pulled.is_empty());
+        assert!(out.leftover.is_empty());
+        assert_eq!(out.kept, vec![(true, 1), (false, 2)]);
+        assert!(a.cancelled.is_empty(), "no cancel when both sides agree");
+    }
+
+    #[tokio::test]
+    async fn failed_pull_returns_the_oid_for_the_next_sweep() {
+        let mut a = MockAdapter::new(true);
+        let mut out = SingleLegReconcile::default();
+        reconcile_single_leg(&mut a, "ETH", vec![(true, 7)], true, true, &mut out).await;
+        assert!(out.pulled.is_empty(), "nothing reported as pulled");
+        assert_eq!(out.leftover, vec![7], "oid must survive for the sweep");
+        assert_eq!(a.cancelled, vec![7], "one attempt was made");
+    }
+
+    #[tokio::test]
+    async fn rejected_without_counter_leg_is_a_noop() {
+        let mut a = MockAdapter::new(false);
+        let mut out = SingleLegReconcile::default();
+        reconcile_single_leg(&mut a, "ETH", vec![], true, true, &mut out).await;
+        assert_eq!(out, SingleLegReconcile::default());
+        assert!(a.cancelled.is_empty());
     }
 }
 
