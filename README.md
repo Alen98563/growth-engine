@@ -12,6 +12,8 @@
 [![Architecture](https://img.shields.io/badge/architecture-3--layer%20%C2%B7%2014%20risk%20mechanisms%20verified-7c3aed)](#architecture)
 [![Status](https://img.shields.io/badge/status-engineering%20complete%20%C2%B7%20archived-amber)](#why-it-was-shelved--an-economic-decision)
 
+> **Available for contract work** — execution layer, risk engines, replay & verification. **[Scope, evidence and rates ↓](#available-for-contract-work)**
+
 > **TL;DR —** Growth Engine is a complete, archived market-making system (6,621 LOC Rust + 2,290 LOC Python, 22 commits, a multi-layer risk engine — 14 mechanisms verified reachable from the engine loop, 10 further methods defined but unreachable). Its economics are governed by **one variable**: the maker fee. Below ~1.5 bps of maker cost the engine has a **structural, positive-expectancy edge**. On **$1,000,000 of capital** at a conservative 6× daily turnover with a Tier-3 maker rebate, the model yields **≈ $613,000 / year (61.3% return on capital)** — a *modelled* figure, not a live result (see §2.7). The engine is complete and archived, waiting for that regime.
 
 ---
@@ -45,6 +47,30 @@ The P&L panel is labelled **model, not result**: fills are assumed whenever the 
 `data/labels_public.csv` is the recorded tape with account fields rounded to 3 decimals. It contains **no private key, no wallet address, no exchange credentials** — only market state, engine state and order sizes.
 
 Static report (GitHub Pages): **https://alen98563.github.io/growth-engine/**
+
+## Available for contract work
+
+I built this engine, ran it on a live account, and stopped it when the measurement said the fee regime made it uneconomic (§3). **Build it, measure it, and state plainly what it does not prove** — that is the service, not the marketing. I take remote contract work on **execution, risk and verification** for trading systems.
+
+| Scope | Shape | Deliverable |
+|:--|:--|:--|
+| **Execution layer** | 2–4 weeks, fixed scope | Idempotent place/cancel semantics, batched placement (one action per cycle instead of two), a request-budget ledger, single-leg guards, tests against a mock adapter |
+| **Risk engine** | 2–3 weeks | Pre-trade gates as one explicit priority chain, position caps, reduce-only bypass, kill switch — plus a reachability audit of which checks actually fire and which are dead code |
+| **Replay & verification** | 1–3 weeks | Deterministic replay over your recorded tape, per-order latency metering, quote-reproduction metrics, and a report an allocator can read |
+| **Independent review** | 1 week | Line-level audit of execution code: cancel semantics, race conditions, fee-aware gating, dead branches. Written findings; no rewrite unless you want one |
+
+**The evidence is in this repository, not in an adjective.** The `v12.8` branch measured, on a live account: HTTP requests per round **6 → 2 (3.0× fewer)**, per-order venue round-trip **529 → 214 ms** place and **872 → 293 ms** cancel, ending at 0 orders / 0 positions; the measurement cost **$2.40**. Five mock-adapter tests cover the single-leg guard.
+
+**What it does not prove — stated up front.** The `v12.8` branch is **not merged** into `main` (`docs/v12.8/README.md` lists the boundaries). Those measurements come from a small post-only book, not production size. This is a **3–5 second cycle engine, not an HFT system**. If a claim is not measured in this repository, I will not put it in a proposal.
+
+**Commercial shape** (USD, fully remote, company invoice available):
+- **Fixed scope** — written scope, 50/50 milestone split, delivered as a branch + `docs/` write-up + a benchmark you can rerun yourself.
+- **Retainer** — 2 days/week, monthly, for continuous execution/risk work.
+- **Review** — flat fee, one week, written report.
+
+Indicative ranges: review **$3–6k** · replay harness **$5–12k** · execution refactor **$8–20k** · retainer **$6–10k/month**. The final quote follows a 30-minute call and a look at your code.
+
+**Contact** — jerry_z2013@outlook.com · [LinkedIn](https://www.linkedin.com/in/jerry-zhang-66512b78) · [Portfolio](https://my.feishu.cn/docx/RAjtdzc9Gos8HYxfFdbchSHF6Fh). Based in China (UTC+8); overlap with European and US mornings. Remote contract only — no relocation.
 
 ## 1. The Question Everyone Asks
 
