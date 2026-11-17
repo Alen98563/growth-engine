@@ -68,7 +68,7 @@ I built this engine, ran it on a live account, and stopped it when the measureme
 - **Retainer** — 2 days/week, monthly, for continuous execution/risk work.
 - **Review** — flat fee, one week, written report.
 
-Indicative ranges: review **$3–6k** · replay harness **$5–12k** · execution refactor **$8–20k** · retainer **$6–10k/month**. The final quote follows a 30-minute call and a look at your code.
+Indicative ranges: risk-gate review **$2–4k** · replay harness **$1.5–3k** · venue integration **$3–6k** · retainer **$1.5–2.5k/month**. The final quote follows a 30-minute call and a look at your code.
 
 **Contact** — jerry_z2013@outlook.com · [LinkedIn](https://www.linkedin.com/in/jerry-zhang-66512b78) · [Portfolio](https://my.feishu.cn/docx/RAjtdzc9Gos8HYxfFdbchSHF6Fh). Based in China (UTC+8); overlap with European and US mornings. Remote contract only — no relocation.
 
