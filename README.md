@@ -68,7 +68,7 @@ I built this engine, ran it on a live account, and stopped it when the measureme
 - **Retainer** — 2 days/week, monthly, for continuous execution/risk work.
 - **Review** — flat fee, one week, written report.
 
-Indicative ranges: risk-gate review **$2–4k** · replay harness **$1.5–3k** · venue integration **$3–6k** · retainer **$1.5–2.5k/month**. The final quote follows a 30-minute call and a look at your code.
+Indicative ranges (2026-11): replay forensics **$2,400 standard** (lean $1,800 / deep $2,900) · risk-gate audit **$1,200–1,500 standalone** (bundled with replay) · venue onboarding **$4,500 per venue**, Hyperliquid ecosystem only, ≤4 person-days · new-listing readiness **$2,000–2,500 per coin** · retainer Lite **$1,800–2,500/month**, max 2 clients. The final quote follows a 30-minute call and a look at your code.
 
 **Contact** — jerry_z2013@outlook.com · [LinkedIn](https://www.linkedin.com/in/jerry-zhang-66512b78) · [Portfolio](https://my.feishu.cn/docx/RAjtdzc9Gos8HYxfFdbchSHF6Fh). Based in China (UTC+8); overlap with European and US mornings. Remote contract only — no relocation.
 
