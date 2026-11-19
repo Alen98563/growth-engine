@@ -169,6 +169,20 @@ Read the batch column carefully: 214 ms is **642 ms divided by 3**, not a
 round-trip itself is about 642 ms. Batching removes two HTTP round trips, two
 signatures and two nonces, but it does **not** make the first order's ack faster.
 
+Seoul rerun on 2026-11-19 (same $12 post-only ETH, 5 orders × 3 rounds):
+
+| metric | serial | batch |
+|---|---:|---:|
+| `/exchange` requests per round | 10 | 2 |
+| wall time per round | 9.88 s | 1.98 s |
+| place ack, venue round-trip only | **434 ms / order** | **428 ms / batch ack → 86 ms / order** |
+| cancel ack, venue round-trip only | **735 ms / order** | **776 ms / batch ack → 155 ms / order** |
+
+Again, 86 ms is **428 ms divided by 5**, not an 86 ms single-order response.
+The batch ack itself is the same order of magnitude as a single serial ack;
+batching removes four HTTP round trips, four signatures and four nonces.
+Raw rows: `evidence/latency_ledger.csv`; timer boundary: `docs/MEASUREMENT_PROTOCOL.md`.
+
 Reproduce:
 ```
 growth-engine bench --n 3 --rounds 1 --coin ETH --notional 12 --max-notional 15 --px-tick 0.1 --quota-gate
