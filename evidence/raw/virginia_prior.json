@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-16",
+  "coin": "ETH",
+  "n": 3,
+  "rounds": 1,
+  "serial": {
+    "place_ack_net_median_ms": 529.0,
+    "cancel_ack_net_median_ms": 872.0,
+    "wall_median_s": 11.81
+  },
+  "batch": {
+    "wall_median_s": 3.82
+  },
+  "derived": {
+    "requests_per_round_serial": 6.0,
+    "requests_per_round_batch": 2.0,
+    "batch_place_total_ack_ms": 642.0,
+    "batch_place_per_order_ack_ms": 214.0,
+    "batch_cancel_total_ack_ms": 879.0,
+    "batch_cancel_per_order_ack_ms": 293.0
+  },
+  "measurement": {
+    "host": "virginia-vps",
+    "git_commit": "unknown (v12.8 README)",
+    "timer": "post_exchange_raw: after signing+nonce, before HTTP send, through JSON decode"
+  },
+  "provenance": "2026-11-16 prior measurement quoted in v12.8 README; raw JSON not retained"
+}
