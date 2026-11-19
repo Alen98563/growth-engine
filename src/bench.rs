@@ -118,6 +118,7 @@ pub async fn run(args: &[String]) -> Result<()> {
     let mut quota_gate = false;
     let mut quota_reserve = 3u64;
     let mut seed_quota: Option<(u64, u64, Option<f64>)> = None;
+    let mut out_path: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -182,6 +183,10 @@ pub async fn run(args: &[String]) -> Result<()> {
                     v[1].parse()?,
                     v.get(2).and_then(|s| s.parse::<f64>().ok()),
                 ));
+                i += 2;
+            }
+            "--out" => {
+                out_path = Some(value(i)?);
                 i += 2;
             }
             other => bail!("unknown argument: {} (try --n 5 --rounds 3 --coin ETH)", other),
@@ -477,6 +482,22 @@ pub async fn run(args: &[String]) -> Result<()> {
                   "wall_net_median_s": batch_wall_net_med, "backoff_median_s": batch_backoff_med,
                   "place_ack_median_ms": batch_place_med, "cancel_ack_median_ms": batch_cancel_med,
                   "place_ack_net_median_ms": batch_place_net_med, "cancel_ack_net_median_ms": batch_cancel_net_med},
+        "derived": {
+            "requests_per_round_serial": serial_req_med,
+            "requests_per_round_batch": batch_req_med,
+            "batch_place_total_ack_ms": batch_place_net_med,
+            "batch_place_per_order_ack_ms": batch_place_net_med / n as f64,
+            "batch_cancel_total_ack_ms": batch_cancel_net_med,
+            "batch_cancel_per_order_ack_ms": batch_cancel_net_med / n as f64,
+        },
+        "measurement": {
+            "timer": "post_exchange_raw: after signing+nonce, before HTTP send, through JSON decode",
+            "excludes": ["strategy", "risk_assess", "order_params", "signing", "nonce"],
+            "scope": "HTTP round-trip + venue processing + response parse",
+            "clock": "std::time::Instant (monotonic)",
+            "host": std::env::var("GE_HOST").unwrap_or_else(|_| "unknown".into()),
+            "git_commit": std::env::var("GE_GIT_COMMIT").unwrap_or_else(|_| "unknown".into()),
+        },
         "quota": {"requests_sent": ex.requests_sent(), "quota_rejects": ex.quota_rejects(),
                    "last_hint": ex.quota_hint(), "headroom": ex.quota_headroom(),
                    "headroom_est": ex.quota_gauge().headroom_est,
@@ -487,5 +508,14 @@ pub async fn run(args: &[String]) -> Result<()> {
                    "state": ex.quota_gauge().state},
     });
     println!("RESULT_JSON {}", report);
+    if let Some(path) = out_path {
+        if let Some(parent) = std::path::Path::new(&path).parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
+        println!("WROTE {}", path);
+    }
     Ok(())
 }
