@@ -18,6 +18,25 @@
 
 ---
 
+## Evidence boundary — read this before quoting any number
+
+| Layer | What it proves | What it does **not** prove | Where |
+|:--|:--|:--|:--|
+| **L1 — offline replay** | The same `RiskEngine::assess()` runs on the recorded 24,809-row tape; quote reproduction is 95.1% PUMP / 97.3% RESOLV; two runs are byte-identical | It does **not** exercise the venue state machine, order signing, HTTP execution, fills, or live P&L. The P&L panel is a model: a fill is assumed whenever the next mid touches the quote | tag `v12.4-replay`, `data/labels_public.csv`, GitHub Pages demo |
+| **L2 — live execution** | On a live account, $12 post-only ETH orders were placed and cancelled through the real signer/HTTP path; 0 orders and 0 positions were left behind | It is **not** production size, not `main`, not a multi-venue deployment. The one 10-hour pilot lost 6.4% on a $137 account | branch `v12.8`, `docs/v12.8/README.md` |
+| **L3 — latency ledger** | Venue round-trip + response parse, measured from after signing/nonce to after JSON decode, on Seoul and Virginia VPSes | It **excludes** strategy, `RiskEngine::assess()`, order-parameter construction, signing, nonce and Python startup. It is **not** an HFT/colocation claim | `evidence/latency_ledger.csv`, `docs/MEASUREMENT_PROTOCOL.md` |
+
+If a sentence in this README is not backed by one of those three layers, treat it as a model or a design intent — not a measurement.
+
+## What this engine demonstrates
+
+1. **Rust trading-system construction** — `MarketAdapter` abstraction, order lifecycle, batched placement, request budget, single-leg protection.
+2. **Risk control** — one explicit gate priority chain, position caps, reduce-only bypass, kill switch, and a reachability audit separating live checks from dead code.
+3. **Deterministic replay** — the same `RiskEngine::assess()` re-run over recorded tapes; no second risk model written for the replay.
+4. **Failure analysis** — 25 documented failure modes (cancel semantics, tick precision, crossed books, reconnect, funding-time, state-machine deadlock) with the conditions that trigger each.
+
+That is the shape of the service: execution layer, risk engine, replay/verification and independent review — not “a strategy that made X%”.
+
 ## 0. Verify it yourself — three commands, no keys, no network
 
 This repository ships an **offline replay** sub-command. It needs no API key, makes no network call, and does not construct a signer. Clone and run:
@@ -39,7 +58,7 @@ What it measures, and what it deliberately does not:
 | Quote reproduction, PUMP | **95.1%** | replayed `buy_sz`/`sell_sz` within 1% of the size actually placed, per side |
 | Quote reproduction, RESOLV | **97.3%** | same test |
 | Quote reproduction, HMSTR / MEME | 25.7% / 63.6% | the coarse-tick state machine (not `risk.rs`) throttles these; reported as-is, not excluded |
-| `assess()` decision latency | **p50 0.13 µs · p99 0.3 µs** | 24,809 timed calls, single-threaded, release build |
+| `assess()` decision latency | **p50 0.117 µs · p99 0.197 µs** | 24,809 timed calls, single-threaded, release build, two hosts (2026-11-19) |
 | Determinism | identical byte output across runs | same tape in → same report out |
 
 The P&L panel is labelled **model, not result**: fills are assumed whenever the next mid touches the quote, at the quoted price. A real fill needs a counterparty. The one real live run on this tape **lost money** — $137.65 → $128.88 in ~10 hours (−6.4%), §2.7 above.
@@ -59,18 +78,18 @@ I built this engine, ran it on a live account, and stopped it when the measureme
 | **Replay & verification** | 1–3 weeks | Deterministic replay over your recorded tape, per-order latency metering, quote-reproduction metrics, and a report an allocator can read |
 | **Independent review** | 1 week | Line-level audit of execution code: cancel semantics, race conditions, fee-aware gating, dead branches. Written findings; no rewrite unless you want one |
 
-**The evidence is in this repository, not in an adjective.** The `v12.8` branch measured, on a live account: HTTP requests per round **6 → 2 (3.0× fewer)**, per-order venue round-trip **529 → 214 ms** place and **872 → 293 ms** cancel, ending at 0 orders / 0 positions; the measurement cost **$2.40**. Five mock-adapter tests cover the single-leg guard.
+**The evidence is in this repository, not in an adjective.** The `v12.8` branch measured, on a live account: HTTP requests per round **6 → 2 (3.0× fewer)** for three orders, ending at 0 orders / 0 positions; the measurement cost **$2.40**. Five mock-adapter tests cover the single-leg guard. The batch ack is **one response for N orders**: the 2026-11-16 run measured **642 ms per batch ack (214 ms/order amortised)** for placements and **879 ms (293 ms/order)** for cancels, against **529 ms** and **872 ms** for a single serial order. Batching removes N−1 round trips, signatures and nonces; it does **not** make the first order's response faster.
 
 **What it does not prove — stated up front.** The `v12.8` branch is **not merged** into `main` (`docs/v12.8/README.md` lists the boundaries). Those measurements come from a small post-only book, not production size. This is a **3–5 second cycle engine, not an HFT system**. If a claim is not measured in this repository, I will not put it in a proposal.
 
 **Commercial shape** (USD, fully remote, company invoice available):
 - **Fixed scope** — written scope, 50/50 milestone split, delivered as a branch + `docs/` write-up + a benchmark you can rerun yourself.
-- **Retainer** — 2 days/week, monthly, for continuous execution/risk work.
+- **B1 execution-layer maintenance** — 2 days/week, monthly, for continuous execution/risk work.
 - **Review** — flat fee, one week, written report.
 
-Indicative ranges (2026-11): replay forensics **$2,400 standard** (lean $1,800 / deep $2,900) · risk-gate audit **$1,200–1,500 standalone** (bundled with replay) · venue onboarding **$4,500 per venue**, Hyperliquid ecosystem only, ≤4 person-days · new-listing readiness **$2,000–2,500 per coin** · retainer Lite **$1,800–2,500/month**, max 2 clients. The final quote follows a 30-minute call and a look at your code.
+Indicative ranges (2026-11): replay forensics **$2,400 standard** (lean $1,800 / deep $2,900) · risk-gate audit **$1,200–1,500 standalone** (bundled with replay) · venue onboarding **$4,500 per venue**, Hyperliquid ecosystem only, ≤4 person-days · new-listing readiness **$2,000–2,500 per coin** · B1 Lite **$1,800–2,500/month**, max 2 clients. The final quote follows a 30-minute call and a look at your code.
 
-**Contact** — jerry_z2013@outlook.com · [LinkedIn](https://www.linkedin.com/in/jerry-zhang-66512b78) · [Portfolio](https://my.feishu.cn/docx/RAjtdzc9Gos8HYxfFdbchSHF6Fh). Based in China (UTC+8); overlap with European and US mornings. Remote contract only — no relocation.
+**Contact** — zrj330824@gmail.com · [LinkedIn](https://www.linkedin.com/in/jerry-zhang-66512b78) · [Portfolio](https://my.feishu.cn/docx/RAjtdzc9Gos8HYxfFdbchSHF6Fh). Based in Suzhou, China (UTC+8); overlap with European and US mornings. Remote contract only — no relocation.
 
 ## 1. The Question Everyone Asks
 
@@ -370,7 +389,18 @@ The engine pays for signing by **spawning a fresh `python3` process per call**, 
 
 > ⚠️ **Correction to the project's own documentation.** `docs/GE_SYSTEM_FRAMEWORK.md` states "Python signing latency ~75 ms". That figure is **wrong** — it is the bare-interpreter cost only, and excludes the `eth_account` import which adds ~1.3 s. Because the engine keeps the 3–5 s cycle, the true ~1.2 s signing cost is absorbed (and harmless), but the documented 75 ms figure should not be quoted.
 
-No p50/p99 wire-latency or RTT distribution was ever measured; the WS data path is event-driven but the order path is dominated by the multi-second cycle. Benchmarks live in `bench_sign.py` / `bench_iso.py` and are reproducible with `python3 bench_sign.py`.
+**Execution-path latency (measured 2026-11-19, Seoul VPS → Hyperliquid mainnet).** These are not estimates. The timer starts after signing/nonce and ends after the response JSON is decoded; it excludes strategy, `RiskEngine::assess()`, order-parameter construction and signing.
+
+| Path | n | p50 | Notes |
+|:--|--:|--:|:--|
+| REST `/info` round trip | 20 | 55 ms | Seoul → HL API; p95 137 ms |
+| WebSocket ping | 20 | 40 ms | p95 66 ms |
+| Single place ack (serial) | 15 | **434 ms** | $12 post-only ETH, 3 rounds × 5 orders |
+| Single cancel ack (serial) | 15 | **735 ms** | same run |
+| One batch place ack (5 orders) | 3 | **428 ms total** | 86 ms/order amortised — one response for five orders |
+| One batch cancel ack (5 orders) | 3 | **776 ms total** | 155 ms/order amortised — one response for five cancels |
+
+Raw rows: `evidence/latency_ledger.csv`; protocol: `docs/MEASUREMENT_PROTOCOL.md`; runner: `bench --out`.
 
 ### 6.2 Measured microstructure (real, not illustrative)
 
@@ -428,8 +458,8 @@ cargo build --release   # RUSTFLAGS="-D warnings" for CI parity
 |:--|:--|:--|
 | `HL_COINS` | `PUMP,FARTCOIN` | comma-separated market-making targets |
 | `HL_GROWTH_MODE` | `true` | toggles the Growth Mode fee assumption |
-| `HL_SKEW_POWER` | `3.0` | cubic skew exponent |
-| `HL_MAX_SKEW_BPS` | `2.0` | maximum skew at 100% position ratio |
+| `HL_SKEW_POWER` | `2.5` | cubic skew exponent (v12.8 test config uses 3.0) |
+| `HL_MAX_SKEW_BPS` | `150.0` | maximum skew at 100% position ratio (bps) |
 
 ---
 
