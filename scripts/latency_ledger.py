@@ -48,7 +48,7 @@ def row_from(path: Path) -> dict:
         "serial_requests_per_round": derived.get("requests_per_round_serial", ""),
         "batch_requests_per_round": derived.get("requests_per_round_batch", ""),
         "timer_boundary": measurement.get("timer", ""),
-        "provenance": "growth-engine bench --out",
+        "provenance": d.get("provenance", "growth-engine bench --out"),
         "source_file": str(path),
     }
 

@@ -41,6 +41,8 @@ This is why the ledger keeps both columns.
 
 - `host=seoul-vps` rows were produced on the Seoul VPS on 2026-11-19 against
   Hyperliquid mainnet, with $12 post-only ETH orders and cleanup to 0 open orders.
+  They were emitted from the working tree that became commit `ce25204`; the
+  `git_commit=working` field is kept as-is rather than rewritten after the commit.
 - The `virginia-vps` row is the 2026-11-16 prior measurement quoted in the
   `v12.8` README; its raw JSON was not retained, so it is marked `prior README`
   rather than passed off as a fresh run.
