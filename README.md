@@ -158,16 +158,25 @@ What this engine does about it:
 Measured on a live test account (Virginia VPS, $12 post-only orders, ETH, gate on):
 
 | metric | serial | batch | ratio |
-|---|---|---|---|
+|---|---|---:|---:|
 | HTTP requests per round (3 orders) | 6 | 2 | 3.0× fewer |
 | wall time per round | 11.81 s | 3.82 s | — |
-| place ack, venue round-trip only | 529 ms/order | 214 ms/order | 2.5× |
-| cancel ack, venue round-trip only | 872 ms/order | 293 ms/order | 3.0× |
+| place ack, venue round-trip only | **529 ms / order** | **642 ms / batch ack → 214 ms / order** | 2.5× per order |
+| cancel ack, venue round-trip only | **872 ms / order** | **879 ms / batch ack → 293 ms / order** | 3.0× per order |
+
+Read the batch column carefully: 214 ms is **642 ms divided by 3**, not a
+214 ms single-order response. One batch ack covers three orders; the venue
+round-trip itself is about 642 ms. Batching removes two HTTP round trips, two
+signatures and two nonces, but it does **not** make the first order's ack faster.
 
 Reproduce:
 ```
 growth-engine bench --n 3 --rounds 1 --coin ETH --notional 12 --max-notional 15 --px-tick 0.1 --quota-gate
 ```
-`bench` also accepts `--seed-quota USED:CAP[:VOLUME]` and `--quota-reserve N`, and emits
-`wall_net_median_s` / `place_ack_net_median_ms` (backoff and signing overhead excluded) in
-its `RESULT_JSON`.
+`bench` also accepts `--seed-quota USED:CAP[:VOLUME]`, `--quota-reserve N`, and
+`--out PATH`. `--out` writes the full `RESULT_JSON` report to a file so it can
+be appended to `evidence/latency_ledger.csv` by `scripts/latency_ledger.py`.
+
+`place_ack_net_median_ms` starts **after** signing/nonce and covers only the
+HTTP round trip plus JSON decode. `wall_net_median_s` removes the bench's own
+quota backoff; it does **not** remove signing cost.

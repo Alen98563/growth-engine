@@ -1,0 +1,64 @@
+{
+  "batch": {
+    "backoff_median_s": 0.0,
+    "cancel_ack_median_ms": 1085.436759,
+    "cancel_ack_net_median_ms": 776.229,
+    "place_ack_median_ms": 907.894417,
+    "place_ack_net_median_ms": 428.462,
+    "requests_median": 2.0,
+    "wall_median_s": 1.983149134,
+    "wall_net_median_s": 1.983149134
+  },
+  "coin": "ETH",
+  "derived": {
+    "batch_cancel_per_order_ack_ms": 155.2458,
+    "batch_cancel_total_ack_ms": 776.229,
+    "batch_place_per_order_ack_ms": 85.69239999999999,
+    "batch_place_total_ack_ms": 428.462,
+    "requests_per_round_batch": 2.0,
+    "requests_per_round_serial": 10.0
+  },
+  "measurement": {
+    "clock": "std::time::Instant (monotonic)",
+    "excludes": [
+      "strategy",
+      "risk_assess",
+      "order_params",
+      "signing",
+      "nonce"
+    ],
+    "git_commit": "working",
+    "host": "seoul-vps",
+    "scope": "HTTP round-trip + venue processing + response parse",
+    "timer": "post_exchange_raw: after signing+nonce, before HTTP send, through JSON decode"
+  },
+  "mid": 1804.15,
+  "n": 5,
+  "notional": 11.907390000000001,
+  "px": 1731.9,
+  "quota": {
+    "deferred": 0,
+    "headroom": null,
+    "headroom_est": null,
+    "last_hint": null,
+    "quota_rejects": 0,
+    "requests_per_usdc": null,
+    "requests_sent": 36,
+    "state": "unknown",
+    "usdc_to_unlock": 0.0,
+    "used_est": null
+  },
+  "rounds": 3,
+  "serial": {
+    "backoff_median_s": 0.0,
+    "cancel_ack_median_ms": 1039.569907,
+    "cancel_ack_net_median_ms": 734.942,
+    "place_ack_median_ms": 961.320253,
+    "place_ack_net_median_ms": 433.644,
+    "requests_median": 10.0,
+    "wall_median_s": 9.876758539,
+    "wall_net_median_s": 9.876758539
+  },
+  "sz": 0.0066,
+  "ts": "2026-11-19T13:20:55.496310787+00:00"
+}

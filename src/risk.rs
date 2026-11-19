@@ -341,17 +341,21 @@ mod tests {
     }
 
     #[test]
-    fn test_cubic_skew_at_safe_zone() {
+    fn test_cubic_skew_dead_zone_is_flat() {
         let engine = RiskEngine::new(test_config());
-        let skew = engine.cubic_skew(0.75);
-        assert!((skew - 1.477).abs() < 0.01, "got {skew}");
+        // skew_safe_zone=0.75 is a dead zone: no skew at or below 75% utilization.
+        assert_eq!(engine.cubic_skew(0.75), 0.0);
+        assert_eq!(engine.cubic_skew(0.50), 0.0);
     }
 
     #[test]
-    fn test_cubic_skew_at_50_percent() {
+    fn test_cubic_skew_ramps_after_dead_zone() {
         let engine = RiskEngine::new(test_config());
-        let skew = engine.cubic_skew(0.50);
-        assert!((skew - 0.4375).abs() < 0.001, "got {skew}");
+        // At 87.5% utilization effective=(0.875-0.75)/0.25=0.5, 150 bps * 0.5^3 = 18.75 bps.
+        let skew = engine.cubic_skew(0.875);
+        assert!((skew - 18.75).abs() < 0.01, "got {skew}");
+        // At 100% utilization the full cap applies.
+        assert!((engine.cubic_skew(1.0) - 150.0).abs() < 0.01);
     }
 
     #[test]
@@ -368,10 +372,10 @@ mod tests {
     fn test_tick_discretization_applies_visible_skew() {
         let engine = RiskEngine::new(test_config());
         let tick = 0.000001;
-        // 2.0 bps skew on $0.08 → 0.00016 → floor = 160 ticks = $0.00016
+        // 2.0 bps on $0.08 = $0.000016 = 16 ticks of $0.000001.
         let (px, ticks) = engine.tick_discretized_skew(0.08, 2.0, tick);
-        assert!(ticks > 0, "visible skew should create non-zero ticks");
-        assert!((px - 0.07984).abs() < 1e-6, "price should drop by ticks");
+        assert_eq!(ticks, 16, "2 bps at $0.08 should be 16 ticks");
+        assert!((px - 0.079984).abs() < 1e-9, "price should drop by 16 ticks");
     }
 
     #[test]
